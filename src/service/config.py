@@ -19,9 +19,6 @@ class ServiceSettings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    service_host: str = Field(default="0.0.0.0", alias="SERVICE_HOST")
-    service_port: int = Field(default=8080, alias="SERVICE_PORT")
-    service_api_key: str = Field(default="replace_me", alias="SERVICE_API_KEY")
     database_url: str = Field(alias="DATABASE_URL")
 
 

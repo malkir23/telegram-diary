@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from aiohttp import web
 from pydantic import ValidationError
 
-from ..config import settings
 from ..db.lifecycle import session_scope
 from .repository import (
     claim_due_reminders,
@@ -16,14 +15,6 @@ from .repository import (
     update_event,
 )
 from .schemas import DiaryEntryCreate, EventCreate, EventDelete, EventUpdate
-
-
-def _unauthorized() -> web.Response:
-    return web.json_response({"detail": "Unauthorized"}, status=401)
-
-
-def _has_api_key(request: web.Request) -> bool:
-    return request.headers.get("X-API-Key") == settings.service_api_key
 
 
 async def _parse_json(request: web.Request) -> dict:
@@ -44,9 +35,6 @@ async def health(_: web.Request) -> web.Response:
 
 
 async def create_entry(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     try:
         payload = DiaryEntryCreate.model_validate(await _parse_json(request))
     except (ValueError, ValidationError) as exc:
@@ -65,9 +53,6 @@ async def create_entry(request: web.Request) -> web.Response:
 
 
 async def create_event_handler(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     try:
         payload = EventCreate.model_validate(await _parse_json(request))
     except (ValueError, ValidationError) as exc:
@@ -86,9 +71,6 @@ async def create_event_handler(request: web.Request) -> web.Response:
 
 
 async def update_event_handler(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     event_id_raw = request.match_info.get("event_id", "0")
     if not event_id_raw.isdigit():
         return web.json_response({"detail": "Invalid event_id"}, status=400)
@@ -116,9 +98,6 @@ async def update_event_handler(request: web.Request) -> web.Response:
 
 
 async def delete_event_handler(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     event_id_raw = request.match_info.get("event_id", "0")
     if not event_id_raw.isdigit():
         return web.json_response({"detail": "Invalid event_id"}, status=400)
@@ -141,9 +120,6 @@ async def delete_event_handler(request: web.Request) -> web.Response:
 
 
 async def list_events_handler(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     user_id_raw = request.query.get("user_id", "")
     if not user_id_raw.isdigit():
         return web.json_response(
@@ -159,9 +135,6 @@ async def list_events_handler(request: web.Request) -> web.Response:
 
 
 async def claim_reminders_handler(request: web.Request) -> web.Response:
-    if not _has_api_key(request):
-        return _unauthorized()
-
     now = datetime.now(UTC)
     async with session_scope() as session:
         reminders = await claim_due_reminders(session, now)

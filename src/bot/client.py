@@ -4,7 +4,6 @@ from datetime import datetime
 
 import aiohttp
 
-from .config import settings
 from .schemas import (
     ConflictItem,
     DiaryEntryCreate,
@@ -24,8 +23,7 @@ class ServiceConflictError(RuntimeError):
 
 class DiaryServiceClient:
     def __init__(self) -> None:
-        self._base_url = settings.diary_service_url.rstrip("/")
-        self._headers = {"X-API-Key": settings.diary_service_api_key}
+        self._base_url = "http://127.0.0.1:8080"
         self._timeout = aiohttp.ClientTimeout(total=15)
 
     async def _json_request(
@@ -42,7 +40,6 @@ class DiaryServiceClient:
             f"{self._base_url}{path}",
             json=json_payload,
             params=params,
-            headers=self._headers,
             timeout=self._timeout,
         ) as response:
             data = await response.json(content_type=None)

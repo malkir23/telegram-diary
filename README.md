@@ -33,10 +33,7 @@ uv run python main.py
 ## Environment variables
 
 - `TELEGRAM_BOT_TOKEN` - Telegram bot token
-- `DIARY_SERVICE_URL` - web service URL, e.g. `http://localhost:8080`
-- `DIARY_SERVICE_API_KEY` - key used by bot
 - `REMINDER_POLL_SECONDS` - how often bot polls due reminders
-- `SERVICE_API_KEY` - expected key on web service (`X-API-Key`)
 - `DATABASE_URL` - async SQLAlchemy PostgreSQL DSN
   - recommended: `postgresql+asyncpg://...`
   - also accepted: `postgresql://...` or `postgres://...` (auto-converted to `asyncpg`)
@@ -71,6 +68,9 @@ Payload example:
 2. Starts `aiohttp` service
 3. Starts Telegram bot
 4. Writes lifecycle logs for migrations and tasks
+
+Service endpoint is fixed in code for local orchestration:
+- `http://127.0.0.1:8080`
 
 ## Bot event commands
 
