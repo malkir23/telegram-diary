@@ -90,7 +90,8 @@ Participants: comma-separated tags/names (for example: `@alice,bob smith`), or `
 When events are shown back to user, time is converted from UTC to user's timezone.
 
 If an event intersects in time with existing events for creator or participants, bot will return conflict details.
-Bot also sends reminder to event creator about 1 hour before start.
+Bot sends reminder to event creator about 10 minutes before start.
 When an event is created, bot sends notification to all event participants (including creator):
 who created it, what was created, and event time.
 For participants by name/tag, direct notification works when that alias is known to bot from prior interaction.
+`start_at` for create/update must be >= current time.

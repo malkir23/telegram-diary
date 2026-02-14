@@ -216,6 +216,7 @@ async def create_event_handler(message: Message) -> None:
                 logger.warning(
                     "Cannot notify user_id=%s about event_id=%s", user_id, created.id
                 )
+        await message.answer(f"Event #{created.id} created successfully.")
     except ServiceConflictError as conflict:
         await message.answer(_format_conflicts(conflict, timezone))
     except Exception as exc:
@@ -365,7 +366,7 @@ async def reminders_loop(bot: Bot) -> None:
                 await bot.send_message(
                     item.creator_tg_user_id,
                     (
-                        "Reminder: in about 1 hour your event starts.\n"
+                        "Reminder: in about 10 minutes your event starts.\n"
                         f"#{item.event_id} {item.title}\n"
                         f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
                     ),

@@ -105,6 +105,9 @@ async def create_event(
 ) -> tuple[EventOut | None, list[ConflictItem]]:
     start_at = _ensure_timezone(payload.start_at)
     end_at = _ensure_timezone(payload.end_at)
+    now = datetime.now(UTC)
+    if start_at < now:
+        raise ValueError("start_at must be greater than or equal to current time")
     if end_at <= start_at:
         raise ValueError("end_at must be later than start_at")
 
@@ -166,6 +169,9 @@ async def update_event(
 
     start_at = _ensure_timezone(payload.start_at)
     end_at = _ensure_timezone(payload.end_at)
+    now = datetime.now(UTC)
+    if start_at < now:
+        raise ValueError("start_at must be greater than or equal to current time")
     if end_at <= start_at:
         raise ValueError("end_at must be later than start_at")
 
@@ -260,7 +266,7 @@ async def claim_due_reminders(
     session: AsyncSession, now: datetime
 ) -> list[ReminderOut]:
     now = _ensure_timezone(now)
-    deadline = now + timedelta(hours=1)
+    deadline = now + timedelta(minutes=10)
 
     query = (
         select(Event)
