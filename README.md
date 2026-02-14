@@ -35,6 +35,7 @@ uv run python main.py
 - `TELEGRAM_BOT_TOKEN` - Telegram bot token
 - `DIARY_SERVICE_URL` - web service URL, e.g. `http://localhost:8080`
 - `DIARY_SERVICE_API_KEY` - key used by bot
+- `REMINDER_POLL_SECONDS` - how often bot polls due reminders
 - `SERVICE_API_KEY` - expected key on web service (`X-API-Key`)
 - `DATABASE_URL` - async SQLAlchemy PostgreSQL DSN
   - recommended: `postgresql+asyncpg://...`
@@ -44,6 +45,11 @@ uv run python main.py
 
 - `GET /health`
 - `POST /diary-entries`
+- `POST /events`
+- `PUT /events/{event_id}`
+- `DELETE /events/{event_id}`
+- `GET /events?user_id=<tg_user_id>`
+- `POST /events/reminders/claim`
 
 Payload example:
 
@@ -65,3 +71,16 @@ Payload example:
 2. Starts `aiohttp` service
 3. Starts Telegram bot
 4. Writes lifecycle logs for migrations and tasks
+
+## Bot event commands
+
+- `/create_event <title> | <start> | <end> | <participants>`
+- `/update_event <id> | <title> | <start> | <end> | <participants>`
+- `/delete_event <id>`
+- `/events`
+
+Time format: `YYYY-MM-DD HH:MM` in UTC.
+Participants: comma-separated Telegram user IDs, or `-`.
+
+If an event intersects in time with existing events for creator or participants, bot will return conflict details.
+Bot also sends reminder to event creator about 1 hour before start.
