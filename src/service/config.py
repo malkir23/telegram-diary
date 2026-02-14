@@ -1,10 +1,7 @@
-import os
-from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def to_asyncpg_dsn(url: str) -> str:
@@ -36,16 +33,14 @@ def to_asyncpg_dsn(url: str) -> str:
     )
 
 
-def _require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+class ServiceSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    database_url: str = Field(alias="DATABASE_URL")
 
 
-@dataclass(frozen=True)
-class ServiceSettings:
-    database_url: str
-
-
-settings = ServiceSettings(database_url=_require_env("DATABASE_URL"))
+settings = ServiceSettings()
