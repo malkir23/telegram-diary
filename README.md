@@ -30,12 +30,6 @@ copy .env.example .env
 uv run python main.py
 ```
 
-Or run only web service with uvicorn:
-
-```bash
-uv run uvicorn src.service.main:app --host 0.0.0.0 --port 8080
-```
-
 ## Environment variables
 
 - `TELEGRAM_BOT_TOKEN` - Telegram bot token

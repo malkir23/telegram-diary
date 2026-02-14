@@ -7,12 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 def to_asyncpg_dsn(url: str) -> str:
     parsed = urlparse(url)
     scheme = parsed.scheme
-    if scheme == "postgres":
-        scheme = "postgresql+asyncpg"
-    elif scheme == "postgresql":
-        scheme = "postgresql+asyncpg"
-    elif scheme in {"postgresql+psycopg2", "postgresql+psycopg"}:
-        scheme = "postgresql+asyncpg"
+    # if scheme == "postgres":
+    #     scheme = "postgresql+asyncpg"
+    # elif scheme == "postgresql":
+    #     scheme = "postgresql+asyncpg"
+    # elif scheme in {"postgresql+psycopg2", "postgresql+psycopg"}:
+    #     scheme = "postgresql+asyncpg"
 
     query_items = dict(parse_qsl(parsed.query, keep_blank_values=True))
     sslmode = query_items.pop("sslmode", None)
