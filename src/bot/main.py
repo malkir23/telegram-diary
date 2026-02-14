@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
@@ -408,17 +409,32 @@ async def reminders_loop(bot: Bot) -> None:
             async with aiohttp.ClientSession() as session:
                 reminders = await _service_client().claim_due_reminders(session)
                 for item in reminders:
-                    timezone = await _get_user_timezone(item.creator_tg_user_id)
-                    start_local = _to_user_tz(item.start_at, timezone)
-                    await bot.send_message(
-                        item.creator_tg_user_id,
-                        (
-                            "Reminder: in about 10 minutes your event starts.\n"
-                            f"#{item.event_id} {item.title}\n"
-                            f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
-                        ),
-                    )
-                    await _service_client().mark_reminder_sent(session, item.event_id)
+                    try:
+                        timezone = await _get_user_timezone(item.creator_tg_user_id)
+                        start_local = _to_user_tz(item.start_at, timezone)
+                        await bot.send_message(
+                            item.creator_tg_user_id,
+                            (
+                                "Reminder: in about 10 minutes your event starts.\n"
+                                f"#{item.event_id} {item.title}\n"
+                                f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
+                            ),
+                        )
+                        await _service_client().mark_reminder_sent(
+                            session, item.event_id
+                        )
+                    except TelegramForbiddenError:
+                        logger.warning(
+                            "User blocked bot, marking reminder as sent for event %s",
+                            item.event_id,
+                        )
+                        await _service_client().mark_reminder_sent(
+                            session, item.event_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to process reminder for event %s", item.event_id
+                        )
         except asyncio.CancelledError:
             raise
         except Exception:
