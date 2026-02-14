@@ -5,7 +5,7 @@ from aiohttp import web
 from .api.handlers import setup_routes
 from .db.lifecycle import on_cleanup, on_startup
 
-SERVICE_HOST = "127.0.0.1"
+SERVICE_HOST = "0.0.0.0"
 SERVICE_PORT = 8080
 
 

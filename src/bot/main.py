@@ -98,10 +98,27 @@ async def create_event_handler(message: Message) -> None:
     try:
         async with aiohttp.ClientSession() as session:
             created = await _service_client().create_event(session, payload)
-        await message.answer(
-            f"Event created: #{created.id} {created.title} "
-            f"{created.start_at:%Y-%m-%d %H:%M} - {created.end_at:%Y-%m-%d %H:%M} UTC"
+        created_by = (
+            f"@{message.from_user.username}"
+            if message.from_user.username
+            else message.from_user.full_name
         )
+        recipients = {created.creator_tg_user_id, *created.participant_tg_user_ids}
+        notification_text = (
+            "New event created.\n"
+            f"Who: {created_by} (id={message.from_user.id})\n"
+            f"What: {created.title}\n"
+            f"When: {created.start_at:%Y-%m-%d %H:%M} - {created.end_at:%Y-%m-%d %H:%M} UTC\n"
+            f"Event ID: #{created.id}"
+        )
+
+        for user_id in recipients:
+            try:
+                await message.bot.send_message(user_id, notification_text)
+            except Exception:
+                logger.warning(
+                    "Cannot notify user_id=%s about event_id=%s", user_id, created.id
+                )
     except ServiceConflictError as conflict:
         await message.answer(_format_conflicts(conflict))
     except Exception as exc:

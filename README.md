@@ -84,3 +84,5 @@ Participants: comma-separated Telegram user IDs, or `-`.
 
 If an event intersects in time with existing events for creator or participants, bot will return conflict details.
 Bot also sends reminder to event creator about 1 hour before start.
+When an event is created, bot sends notification to all event participants (including creator):
+who created it, what was created, and event time.

@@ -1,25 +1,51 @@
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def to_asyncpg_dsn(url: str) -> str:
-    if url.startswith("postgres://"):
-        return "postgresql+asyncpg://" + url[len("postgres://") :]
-    if url.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + url[len("postgresql://") :]
-    if url.startswith("postgresql+psycopg2://"):
-        return "postgresql+asyncpg://" + url[len("postgresql+psycopg2://") :]
-    if url.startswith("postgresql+psycopg://"):
-        return "postgresql+asyncpg://" + url[len("postgresql+psycopg://") :]
-    return url
+    parsed = urlparse(url)
+    scheme = parsed.scheme
+    if scheme == "postgres":
+        scheme = "postgresql+asyncpg"
+    elif scheme == "postgresql":
+        scheme = "postgresql+asyncpg"
+    elif scheme in {"postgresql+psycopg2", "postgresql+psycopg"}:
+        scheme = "postgresql+asyncpg"
 
+    query_items = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    sslmode = query_items.pop("sslmode", None)
+    if sslmode and "ssl" not in query_items:
+        query_items["ssl"] = (
+            "require" if sslmode in {"require", "verify-ca", "verify-full"} else sslmode
+        )
 
-class ServiceSettings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    return urlunparse(
+        (
+            scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query_items),
+            parsed.fragment,
+        )
     )
 
-    database_url: str = Field(alias="DATABASE_URL")
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
 
 
-settings = ServiceSettings()
+@dataclass(frozen=True)
+class ServiceSettings:
+    database_url: str
+
+
+settings = ServiceSettings(database_url=_require_env("DATABASE_URL"))
