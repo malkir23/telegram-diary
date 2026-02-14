@@ -184,6 +184,16 @@ class DiaryServiceClient:
             )
         return reminders
 
+    async def mark_reminder_sent(
+        self, session: aiohttp.ClientSession, event_id: int
+    ) -> None:
+        await self._json_request(
+            session,
+            "POST",
+            f"/events/{event_id}/reminder-sent",
+            json_payload={},
+        )
+
     async def get_user_timezone(
         self, session: aiohttp.ClientSession, user_id: int
     ) -> UserTimezoneOut:

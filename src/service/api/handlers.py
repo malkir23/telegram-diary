@@ -13,6 +13,7 @@ from .repository import (
     delete_event,
     get_user_timezone,
     list_events_for_user,
+    mark_reminder_sent,
     set_user_timezone,
     update_event,
 )
@@ -153,6 +154,17 @@ async def claim_reminders_handler(_: web.Request) -> web.Response:
     )
 
 
+async def mark_reminder_sent_handler(request: web.Request) -> web.Response:
+    event_id_raw = request.match_info.get("event_id", "0")
+    if not event_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid event_id"}, status=400)
+    event_id = int(event_id_raw)
+
+    async with session_scope() as session:
+        updated = await mark_reminder_sent(session, event_id)
+    return web.json_response({"status": "ok", "updated": updated}, status=200)
+
+
 async def get_user_timezone_handler(request: web.Request) -> web.Response:
     user_id_raw = request.match_info.get("user_id", "0")
     if not user_id_raw.isdigit():
@@ -191,5 +203,6 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_delete("/events/{event_id}", delete_event_handler)
     app.router.add_get("/events", list_events_handler)
     app.router.add_post("/events/reminders/claim", claim_reminders_handler)
+    app.router.add_post("/events/{event_id}/reminder-sent", mark_reminder_sent_handler)
     app.router.add_get("/users/{user_id}/timezone", get_user_timezone_handler)
     app.router.add_put("/users/{user_id}/timezone", set_user_timezone_handler)

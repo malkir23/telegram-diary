@@ -283,12 +283,6 @@ async def claim_due_reminders(
     if not events:
         return []
 
-    event_ids = [item.id for item in events]
-    await session.execute(
-        update(Event).where(Event.id.in_(event_ids)).values(reminder_sent=True)
-    )
-    await session.commit()
-
     return [
         ReminderOut(
             event_id=item.id,
@@ -298,6 +292,16 @@ async def claim_due_reminders(
         )
         for item in events
     ]
+
+
+async def mark_reminder_sent(session: AsyncSession, event_id: int) -> bool:
+    updated = await session.execute(
+        update(Event)
+        .where(Event.id == event_id, Event.reminder_sent.is_(False))
+        .values(reminder_sent=True)
+    )
+    await session.commit()
+    return (updated.rowcount or 0) > 0
 
 
 def _validate_timezone(timezone: str) -> str:

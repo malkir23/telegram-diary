@@ -25,6 +25,7 @@ HELP_TEXT = (
     "/update_event <id> | <title> | <start> | <end> | <participants>\n"
     "/delete_event <id>\n"
     "/events\n\n"
+    "/events_today\n\n"
     "Time format: YYYY-MM-DD HH:MM (in your timezone)\n"
     "Participants: comma-separated tags/names or '-'"
 )
@@ -331,6 +332,52 @@ async def list_events_handler(message: Message) -> None:
     await message.answer("\n\n".join(lines))
 
 
+async def list_events_today_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _register_user_aliases(message)
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        participant_labels: list[str] = []
+        if message.from_user.username:
+            participant_labels.append(
+                _normalize_participant_label(message.from_user.username)
+            )
+        full_name = message.from_user.full_name.strip()
+        if full_name:
+            participant_labels.append(_normalize_participant_label(full_name))
+        async with aiohttp.ClientSession() as session:
+            events = await _service_client().list_events(
+                session, message.from_user.id, participant_labels
+            )
+    except Exception as exc:
+        logger.exception("Failed to list today's events")
+        await message.answer(f"Failed to list today's events: {exc}")
+        return
+
+    now_local = datetime.now(ZoneInfo(timezone))
+    today = now_local.date()
+    today_events = [
+        item for item in events if _to_user_tz(item.start_at, timezone).date() == today
+    ]
+
+    if not today_events:
+        await message.answer(f"No events for today ({timezone}).")
+        return
+
+    lines = [f"Today's events ({timezone}):"]
+    for item in today_events[:20]:
+        start_local = _to_user_tz(item.start_at, timezone)
+        end_local = _to_user_tz(item.end_at, timezone)
+        participants = ",".join(item.participants) or "-"
+        lines.append(
+            f"#{item.id} {item.title}\n"
+            f"{start_local:%Y-%m-%d %H:%M} - {end_local:%Y-%m-%d %H:%M} ({timezone})\n"
+            f"participants: {participants}"
+        )
+    await message.answer("\n\n".join(lines))
+
+
 async def text_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
@@ -360,17 +407,18 @@ async def reminders_loop(bot: Bot) -> None:
         try:
             async with aiohttp.ClientSession() as session:
                 reminders = await _service_client().claim_due_reminders(session)
-            for item in reminders:
-                timezone = await _get_user_timezone(item.creator_tg_user_id)
-                start_local = _to_user_tz(item.start_at, timezone)
-                await bot.send_message(
-                    item.creator_tg_user_id,
-                    (
-                        "Reminder: in about 10 minutes your event starts.\n"
-                        f"#{item.event_id} {item.title}\n"
-                        f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
-                    ),
-                )
+                for item in reminders:
+                    timezone = await _get_user_timezone(item.creator_tg_user_id)
+                    start_local = _to_user_tz(item.start_at, timezone)
+                    await bot.send_message(
+                        item.creator_tg_user_id,
+                        (
+                            "Reminder: in about 10 minutes your event starts.\n"
+                            f"#{item.event_id} {item.title}\n"
+                            f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
+                        ),
+                    )
+                    await _service_client().mark_reminder_sent(session, item.event_id)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -390,6 +438,7 @@ async def run() -> None:
     dp.message.register(update_event_handler, Command("update_event"))
     dp.message.register(delete_event_handler, Command("delete_event"))
     dp.message.register(list_events_handler, Command("events"))
+    dp.message.register(list_events_today_handler, Command("events_today"))
     dp.message.register(text_handler, F.text & ~F.text.startswith("/"))
 
     reminder_task = asyncio.create_task(reminders_loop(bot), name="reminders-loop")
