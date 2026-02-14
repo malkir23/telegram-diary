@@ -21,7 +21,7 @@ class EventCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     start_at: datetime
     end_at: datetime
-    participants: list[str] = Field(default_factory=list)
+    participants: list[int] = Field(default_factory=list)
 
 
 class EventUpdate(BaseModel):
@@ -29,7 +29,7 @@ class EventUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     start_at: datetime
     end_at: datetime
-    participants: list[str] = Field(default_factory=list)
+    participants: list[int] = Field(default_factory=list)
 
 
 class EventDelete(BaseModel):
@@ -42,7 +42,7 @@ class EventOut(BaseModel):
     title: str
     start_at: datetime
     end_at: datetime
-    participants: list[str]
+    participants: list[int]
 
 
 class ConflictItem(BaseModel):
@@ -50,14 +50,30 @@ class ConflictItem(BaseModel):
     title: str
     start_at: datetime
     end_at: datetime
-    conflicting_participants: list[str]
+    conflicting_participants: list[int]
 
 
 class ReminderOut(BaseModel):
     event_id: int
-    creator_tg_user_id: int
+    recipients: list[int]
     title: str
     start_at: datetime
+
+
+class UserUpsert(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    tag: str | None = Field(default=None, max_length=255)
+
+
+class UserOut(BaseModel):
+    tg_user_id: int
+    name: str
+    tag: str | None
+
+
+class UserResolveOut(BaseModel):
+    resolved: dict[str, int]
+    unresolved: list[str]
 
 
 class UserTimezoneSet(BaseModel):

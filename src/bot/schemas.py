@@ -17,7 +17,7 @@ class EventCreate:
     title: str
     start_at: datetime
     end_at: datetime
-    participants: list[str]
+    participants: list[int]
 
 
 @dataclass(slots=True)
@@ -26,7 +26,7 @@ class EventUpdate:
     title: str
     start_at: datetime
     end_at: datetime
-    participants: list[str]
+    participants: list[int]
 
 
 @dataclass(slots=True)
@@ -41,7 +41,7 @@ class EventOut:
     title: str
     start_at: datetime
     end_at: datetime
-    participants: list[str]
+    participants: list[int]
 
 
 @dataclass(slots=True)
@@ -50,13 +50,13 @@ class ConflictItem:
     title: str
     start_at: datetime
     end_at: datetime
-    conflicting_participants: list[str]
+    conflicting_participants: list[int]
 
 
 @dataclass(slots=True)
 class ReminderOut:
     event_id: int
-    creator_tg_user_id: int
+    recipients: list[int]
     title: str
     start_at: datetime
 
@@ -65,3 +65,16 @@ class ReminderOut:
 class UserTimezoneOut:
     tg_user_id: int
     timezone: str
+
+
+@dataclass(slots=True)
+class UserOut:
+    tg_user_id: int
+    name: str
+    tag: str | None
+
+
+@dataclass(slots=True)
+class UserResolveOut:
+    resolved: dict[str, int]
+    unresolved: list[str]

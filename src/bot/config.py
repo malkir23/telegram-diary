@@ -11,6 +11,9 @@ class BotSettings(BaseSettings):
 
     telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN")
     reminder_poll_seconds: int = Field(default=30, alias="REMINDER_POLL_SECONDS")
+    diary_service_url: str = Field(
+        default="http://127.0.0.1:8080", alias="DIARY_SERVICE_URL"
+    )
 
 
 settings = BotSettings()

@@ -34,6 +34,7 @@ uv run python main.py
 
 - `TELEGRAM_BOT_TOKEN` - Telegram bot token
 - `REMINDER_POLL_SECONDS` - how often bot polls due reminders
+- `DIARY_SERVICE_URL` - base URL of diary service for bot (default: `http://127.0.0.1:8080`)
 - `DATABASE_URL` - async SQLAlchemy PostgreSQL DSN
   - recommended: `postgresql+asyncpg://...`
   - also accepted: `postgresql://...` or `postgres://...` (auto-converted to `asyncpg`)
@@ -50,6 +51,8 @@ uv run python main.py
 - `POST /events/{event_id}/reminder-sent`
 - `GET /users/{user_id}/timezone`
 - `PUT /users/{user_id}/timezone`
+- `PUT /users/{user_id}`
+- `GET /users/resolve?labels=<comma_separated_aliases>`
 
 Payload example:
 
@@ -87,14 +90,16 @@ Service endpoint is fixed in code for local orchestration:
 
 Time format: `YYYY-MM-DD HH:MM` in your configured timezone.
 Participants: comma-separated tags/names (for example: `@alice,bob smith`), or `-`.
+Bot resolves participants to Telegram IDs via `users` table.
 
 `start_at` and `end_at` are converted to UTC before storing in database.
 When events are shown back to user, time is converted from UTC to user's timezone.
 
 If an event intersects in time with existing events for creator or participants, bot will return conflict details.
-Bot sends reminder to event creator about 10 minutes before start.
+Bot sends reminder to event creator and participants about 10 minutes before start.
 Reminder is marked as sent only after successful Telegram delivery.
 When an event is created, bot sends notification to all event participants (including creator):
 who created it, what was created, and event time.
-For participants by name/tag, direct notification works when that alias is known to bot from prior interaction.
+For participants by name/tag, direct notification works after user has interacted with bot at least once
+(so profile is saved in `users` table).
 `start_at` for create/update must be >= current time.

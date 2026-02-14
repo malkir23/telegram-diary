@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, delete, false, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..db.models import DiaryEntry, Event, EventParticipant, UserSetting
+from ..db.models import DiaryEntry, Event, EventParticipant, User, UserSetting
 from .schemas import (
     ConflictItem,
     DiaryEntryCreate,
@@ -16,8 +16,11 @@ from .schemas import (
     EventOut,
     EventUpdate,
     ReminderOut,
+    UserOut,
+    UserResolveOut,
     UserTimezoneOut,
     UserTimezoneSet,
+    UserUpsert,
 )
 
 
@@ -37,15 +40,12 @@ async def create_diary_entry(
     return entry
 
 
-def _normalize_participants(participants: list[str]) -> list[str]:
-    cleaned: set[str] = set()
+def _normalize_participants(participants: list[int]) -> list[int]:
+    cleaned: set[int] = set()
     for value in participants:
-        candidate = value.strip()
-        if not candidate:
+        if value < 1:
             continue
-        if candidate.startswith("@"):
-            candidate = candidate[1:]
-        cleaned.add(candidate.casefold())
+        cleaned.add(value)
     return sorted(cleaned)
 
 
@@ -62,19 +62,21 @@ def _event_to_out(event: Event) -> EventOut:
         title=event.title,
         start_at=event.start_at,
         end_at=event.end_at,
-        participants=sorted([item.participant_label for item in event.participants]),
+        participants=sorted(
+            [item.participant_tg_user_id for item in event.participants]
+        ),
     )
 
 
-def _event_conflict_labels(event: Event, labels: set[str]) -> list[str]:
-    involved = {item.participant_label for item in event.participants}
+def _event_conflict_labels(event: Event, labels: set[int]) -> list[int]:
+    involved = {item.participant_tg_user_id for item in event.participants}
     return sorted(involved.intersection(labels))
 
 
 async def _find_conflicts(
     session: AsyncSession,
     creator_id: int,
-    labels: set[str],
+    labels: set[int],
     start_at: datetime,
     end_at: datetime,
     *,
@@ -88,7 +90,7 @@ async def _find_conflicts(
         .where(
             or_(
                 Event.creator_tg_user_id == creator_id,
-                EventParticipant.participant_label.in_(labels),
+                EventParticipant.participant_tg_user_id.in_(labels),
             )
         )
         .order_by(Event.start_at.asc())
@@ -141,7 +143,7 @@ async def create_event(
     if participant_labels:
         session.add_all(
             [
-                EventParticipant(event_id=event.id, participant_label=label)
+                EventParticipant(event_id=event.id, participant_tg_user_id=label)
                 for label in participant_labels
             ]
         )
@@ -212,7 +214,7 @@ async def update_event(
     if participant_labels:
         session.add_all(
             [
-                EventParticipant(event_id=event_id, participant_label=label)
+                EventParticipant(event_id=event_id, participant_tg_user_id=label)
                 for label in participant_labels
             ]
         )
@@ -238,13 +240,7 @@ async def delete_event(
     return True
 
 
-async def list_events_for_user(
-    session: AsyncSession, user_id: int, participant_labels: list[str]
-) -> list[EventOut]:
-    labels = _normalize_participants(participant_labels)
-    participant_filter = (
-        EventParticipant.participant_label.in_(labels) if labels else false()
-    )
+async def list_events_for_user(session: AsyncSession, user_id: int) -> list[EventOut]:
     query = (
         select(Event)
         .outerjoin(EventParticipant, EventParticipant.event_id == Event.id)
@@ -252,7 +248,7 @@ async def list_events_for_user(
         .where(
             or_(
                 Event.creator_tg_user_id == user_id,
-                participant_filter,
+                EventParticipant.participant_tg_user_id == user_id,
             )
         )
         .order_by(Event.start_at.asc())
@@ -283,10 +279,24 @@ async def claim_due_reminders(
     if not events:
         return []
 
+    event_ids = [item.id for item in events]
+    participant_rows = await session.execute(
+        select(EventParticipant).where(EventParticipant.event_id.in_(event_ids))
+    )
+    participants_by_event: dict[int, set[int]] = {}
+    for row in participant_rows.scalars():
+        participants_by_event.setdefault(row.event_id, set()).add(
+            row.participant_tg_user_id
+        )
+
     return [
         ReminderOut(
             event_id=item.id,
-            creator_tg_user_id=item.creator_tg_user_id,
+            recipients=sorted(
+                {item.creator_tg_user_id}.union(
+                    participants_by_event.get(item.id, set())
+                )
+            ),
             title=item.title,
             start_at=item.start_at,
         )
@@ -342,3 +352,80 @@ async def set_user_timezone(
         current.timezone = timezone
     await session.commit()
     return UserTimezoneOut(tg_user_id=user_id, timezone=timezone)
+
+
+def _normalize_user_tag(tag: str | None) -> str | None:
+    if tag is None:
+        return None
+    candidate = tag.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("@"):
+        candidate = candidate[1:]
+    return candidate.casefold()
+
+
+async def upsert_user(
+    session: AsyncSession, user_id: int, payload: UserUpsert
+) -> UserOut:
+    tag = _normalize_user_tag(payload.tag)
+    name = payload.name.strip()
+    if not name:
+        raise ValueError("name cannot be empty")
+
+    if tag is not None:
+        await session.execute(
+            update(User)
+            .where(User.tag == tag, User.tg_user_id != user_id)
+            .values(tag=None)
+        )
+
+    row = (
+        await session.execute(select(User).where(User.tg_user_id == user_id))
+    ).scalar_one_or_none()
+    if row is None:
+        row = User(tg_user_id=user_id, name=name, tag=tag)
+        session.add(row)
+    else:
+        row.name = name
+        row.tag = tag
+    await session.commit()
+    return UserOut(tg_user_id=row.tg_user_id, name=row.name, tag=row.tag)
+
+
+async def resolve_users_by_labels(
+    session: AsyncSession, labels: list[str]
+) -> UserResolveOut:
+    normalized_labels: list[str] = []
+    for label in labels:
+        candidate = label.strip()
+        if not candidate:
+            continue
+        if candidate.startswith("@"):
+            candidate = candidate[1:]
+        normalized_labels.append(candidate.casefold())
+
+    if not normalized_labels:
+        return UserResolveOut(resolved={}, unresolved=[])
+
+    unique_labels = sorted(set(normalized_labels))
+    users = (
+        await session.execute(
+            select(User).where(
+                or_(
+                    User.tag.in_(unique_labels),
+                    func.lower(User.name).in_(unique_labels),
+                )
+            )
+        )
+    ).scalars()
+    resolved: dict[str, int] = {}
+    for user in users:
+        if user.tag and user.tag in unique_labels:
+            resolved[user.tag] = user.tg_user_id
+        user_name_key = user.name.casefold()
+        if user_name_key in unique_labels:
+            resolved[user_name_key] = user.tg_user_id
+
+    unresolved = [label for label in unique_labels if label not in resolved]
+    return UserResolveOut(resolved=resolved, unresolved=unresolved)

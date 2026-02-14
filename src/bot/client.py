@@ -12,6 +12,8 @@ from .schemas import (
     EventOut,
     EventUpdate,
     ReminderOut,
+    UserOut,
+    UserResolveOut,
     UserTimezoneOut,
 )
 
@@ -23,8 +25,8 @@ class ServiceConflictError(RuntimeError):
 
 
 class DiaryServiceClient:
-    def __init__(self) -> None:
-        self._base_url = "http://127.0.0.1:8080"
+    def __init__(self, base_url: str = "http://127.0.0.1:8080") -> None:
+        self._base_url = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=15)
 
     async def _json_request(
@@ -141,16 +143,12 @@ class DiaryServiceClient:
         self,
         session: aiohttp.ClientSession,
         user_id: int,
-        participant_labels: list[str],
     ) -> list[EventOut]:
         data = await self._json_request(
             session,
             "GET",
             "/events",
-            params={
-                "user_id": str(user_id),
-                "participant_labels": ",".join(participant_labels),
-            },
+            params={"user_id": str(user_id)},
         )
         items: list[EventOut] = []
         for row in data:
@@ -177,7 +175,7 @@ class DiaryServiceClient:
             reminders.append(
                 ReminderOut(
                     event_id=row["event_id"],
-                    creator_tg_user_id=row["creator_tg_user_id"],
+                    recipients=row["recipients"],
                     title=row["title"],
                     start_at=datetime.fromisoformat(row["start_at"]),
                 )
@@ -210,3 +208,34 @@ class DiaryServiceClient:
             json_payload={"timezone": timezone},
         )
         return UserTimezoneOut(tg_user_id=data["tg_user_id"], timezone=data["timezone"])
+
+    async def upsert_user(
+        self,
+        session: aiohttp.ClientSession,
+        user_id: int,
+        *,
+        name: str,
+        tag: str | None,
+    ) -> UserOut:
+        data = await self._json_request(
+            session,
+            "PUT",
+            f"/users/{user_id}",
+            json_payload={"name": name, "tag": tag},
+        )
+        return UserOut(
+            tg_user_id=data["tg_user_id"],
+            name=data["name"],
+            tag=data["tag"],
+        )
+
+    async def resolve_users(
+        self, session: aiohttp.ClientSession, labels: list[str]
+    ) -> UserResolveOut:
+        data = await self._json_request(
+            session,
+            "GET",
+            "/users/resolve",
+            params={"labels": ",".join(labels)},
+        )
+        return UserResolveOut(resolved=data["resolved"], unresolved=data["unresolved"])

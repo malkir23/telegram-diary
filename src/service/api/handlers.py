@@ -14,8 +14,10 @@ from .repository import (
     get_user_timezone,
     list_events_for_user,
     mark_reminder_sent,
+    resolve_users_by_labels,
     set_user_timezone,
     update_event,
+    upsert_user,
 )
 from .schemas import (
     DiaryEntryCreate,
@@ -23,6 +25,7 @@ from .schemas import (
     EventDelete,
     EventUpdate,
     UserTimezoneSet,
+    UserUpsert,
 )
 
 
@@ -133,13 +136,9 @@ async def list_events_handler(request: web.Request) -> web.Response:
             {"detail": "user_id is required and must be integer"}, status=400
         )
     user_id = int(user_id_raw)
-    labels_raw = request.query.get("participant_labels", "")
-    participant_labels = [
-        item.strip() for item in labels_raw.split(",") if item.strip()
-    ]
 
     async with session_scope() as session:
-        events = await list_events_for_user(session, user_id, participant_labels)
+        events = await list_events_for_user(session, user_id)
     return web.json_response(
         [item.model_dump(mode="json") for item in events], status=200
     )
@@ -195,6 +194,33 @@ async def set_user_timezone_handler(request: web.Request) -> web.Response:
     return web.json_response(result.model_dump(mode="json"), status=200)
 
 
+async def upsert_user_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.match_info.get("user_id", "0")
+    if not user_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid user_id"}, status=400)
+    user_id = int(user_id_raw)
+
+    try:
+        payload = UserUpsert.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            result = await upsert_user(session, user_id, payload)
+        except ValueError as exc:
+            return web.json_response({"detail": str(exc)}, status=422)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
+async def resolve_users_handler(request: web.Request) -> web.Response:
+    labels_raw = request.query.get("labels", "")
+    labels = [item.strip() for item in labels_raw.split(",") if item.strip()]
+    async with session_scope() as session:
+        result = await resolve_users_by_labels(session, labels)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
 def setup_routes(app: web.Application) -> None:
     app.router.add_get("/health", health)
     app.router.add_post("/diary-entries", create_entry)
@@ -206,3 +232,5 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_post("/events/{event_id}/reminder-sent", mark_reminder_sent_handler)
     app.router.add_get("/users/{user_id}/timezone", get_user_timezone_handler)
     app.router.add_put("/users/{user_id}/timezone", set_user_timezone_handler)
+    app.router.add_put("/users/{user_id}", upsert_user_handler)
+    app.router.add_get("/users/resolve", resolve_users_handler)

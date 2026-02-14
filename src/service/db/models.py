@@ -16,6 +16,16 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    tag: Mapped[str | None] = mapped_column(
+        Text, nullable=True, unique=True, index=True
+    )
+
+
 class DiaryEntry(Base):
     __tablename__ = "diary_entries"
 
@@ -59,7 +69,12 @@ class EventParticipant(Base):
     event_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
     )
-    participant_label: Mapped[str] = mapped_column(Text, primary_key=True, index=True)
+    participant_tg_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.tg_user_id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
 
     event: Mapped[Event] = relationship(back_populates="participants")
 
