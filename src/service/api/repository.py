@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, false, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..db.models import DiaryEntry, Event, EventParticipant
+from ..db.models import DiaryEntry, Event, EventParticipant, UserSetting
 from .schemas import (
     ConflictItem,
     DiaryEntryCreate,
@@ -15,6 +16,8 @@ from .schemas import (
     EventOut,
     EventUpdate,
     ReminderOut,
+    UserTimezoneOut,
+    UserTimezoneSet,
 )
 
 
@@ -34,16 +37,22 @@ async def create_diary_entry(
     return entry
 
 
-def _normalize_user_ids(creator_id: int, participant_ids: list[int]) -> list[int]:
-    cleaned = {user_id for user_id in participant_ids if user_id > 0}
-    cleaned.discard(creator_id)
+def _normalize_participants(participants: list[str]) -> list[str]:
+    cleaned: set[str] = set()
+    for value in participants:
+        candidate = value.strip()
+        if not candidate:
+            continue
+        if candidate.startswith("@"):
+            candidate = candidate[1:]
+        cleaned.add(candidate.casefold())
     return sorted(cleaned)
 
 
 def _ensure_timezone(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _event_to_out(event: Event) -> EventOut:
@@ -53,21 +62,19 @@ def _event_to_out(event: Event) -> EventOut:
         title=event.title,
         start_at=event.start_at,
         end_at=event.end_at,
-        participant_tg_user_ids=sorted(
-            [item.tg_user_id for item in event.participants]
-        ),
+        participants=sorted([item.participant_label for item in event.participants]),
     )
 
 
-def _event_conflict_users(event: Event, users: set[int]) -> list[int]:
-    involved = {event.creator_tg_user_id}
-    involved.update(item.tg_user_id for item in event.participants)
-    return sorted(involved.intersection(users))
+def _event_conflict_labels(event: Event, labels: set[str]) -> list[str]:
+    involved = {item.participant_label for item in event.participants}
+    return sorted(involved.intersection(labels))
 
 
 async def _find_conflicts(
     session: AsyncSession,
-    users: set[int],
+    creator_id: int,
+    labels: set[str],
     start_at: datetime,
     end_at: datetime,
     *,
@@ -80,8 +87,8 @@ async def _find_conflicts(
         .where(Event.start_at < end_at, Event.end_at > start_at)
         .where(
             or_(
-                Event.creator_tg_user_id.in_(users),
-                EventParticipant.tg_user_id.in_(users),
+                Event.creator_tg_user_id == creator_id,
+                EventParticipant.participant_label.in_(labels),
             )
         )
         .order_by(Event.start_at.asc())
@@ -101,11 +108,11 @@ async def create_event(
     if end_at <= start_at:
         raise ValueError("end_at must be later than start_at")
 
-    participant_ids = _normalize_user_ids(
-        payload.creator_tg_user_id, payload.participant_tg_user_ids
+    participant_labels = _normalize_participants(payload.participants)
+    labels = set(participant_labels)
+    conflicts = await _find_conflicts(
+        session, payload.creator_tg_user_id, labels, start_at, end_at
     )
-    involved_users = {payload.creator_tg_user_id, *participant_ids}
-    conflicts = await _find_conflicts(session, involved_users, start_at, end_at)
     if conflicts:
         return None, [
             ConflictItem(
@@ -113,7 +120,7 @@ async def create_event(
                 title=item.title,
                 start_at=item.start_at,
                 end_at=item.end_at,
-                conflicting_user_ids=_event_conflict_users(item, involved_users),
+                conflicting_participants=_event_conflict_labels(item, labels),
             )
             for item in conflicts
         ]
@@ -128,11 +135,11 @@ async def create_event(
     session.add(event)
     await session.flush()
 
-    if participant_ids:
+    if participant_labels:
         session.add_all(
             [
-                EventParticipant(event_id=event.id, tg_user_id=user_id)
-                for user_id in participant_ids
+                EventParticipant(event_id=event.id, participant_label=label)
+                for label in participant_labels
             ]
         )
 
@@ -162,13 +169,12 @@ async def update_event(
     if end_at <= start_at:
         raise ValueError("end_at must be later than start_at")
 
-    participant_ids = _normalize_user_ids(
-        payload.actor_tg_user_id, payload.participant_tg_user_ids
-    )
-    involved_users = {payload.actor_tg_user_id, *participant_ids}
+    participant_labels = _normalize_participants(payload.participants)
+    labels = set(participant_labels)
     conflicts = await _find_conflicts(
         session,
-        involved_users,
+        payload.actor_tg_user_id,
+        labels,
         start_at,
         end_at,
         exclude_event_id=event_id,
@@ -182,7 +188,7 @@ async def update_event(
                     title=item.title,
                     start_at=item.start_at,
                     end_at=item.end_at,
-                    conflicting_user_ids=_event_conflict_users(item, involved_users),
+                    conflicting_participants=_event_conflict_labels(item, labels),
                 )
                 for item in conflicts
             ],
@@ -197,11 +203,11 @@ async def update_event(
     await session.execute(
         delete(EventParticipant).where(EventParticipant.event_id == event_id)
     )
-    if participant_ids:
+    if participant_labels:
         session.add_all(
             [
-                EventParticipant(event_id=event_id, tg_user_id=user_id)
-                for user_id in participant_ids
+                EventParticipant(event_id=event_id, participant_label=label)
+                for label in participant_labels
             ]
         )
 
@@ -226,7 +232,13 @@ async def delete_event(
     return True
 
 
-async def list_events_for_user(session: AsyncSession, user_id: int) -> list[EventOut]:
+async def list_events_for_user(
+    session: AsyncSession, user_id: int, participant_labels: list[str]
+) -> list[EventOut]:
+    labels = _normalize_participants(participant_labels)
+    participant_filter = (
+        EventParticipant.participant_label.in_(labels) if labels else false()
+    )
     query = (
         select(Event)
         .outerjoin(EventParticipant, EventParticipant.event_id == Event.id)
@@ -234,7 +246,7 @@ async def list_events_for_user(session: AsyncSession, user_id: int) -> list[Even
         .where(
             or_(
                 Event.creator_tg_user_id == user_id,
-                EventParticipant.tg_user_id == user_id,
+                participant_filter,
             )
         )
         .order_by(Event.start_at.asc())
@@ -280,3 +292,43 @@ async def claim_due_reminders(
         )
         for item in events
     ]
+
+
+def _validate_timezone(timezone: str) -> str:
+    candidate = timezone.strip()
+    if not candidate:
+        raise ValueError("timezone cannot be empty")
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("invalid timezone") from exc
+    return candidate
+
+
+async def get_user_timezone(session: AsyncSession, user_id: int) -> UserTimezoneOut:
+    row = (
+        await session.execute(
+            select(UserSetting).where(UserSetting.tg_user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return UserTimezoneOut(tg_user_id=user_id, timezone="UTC")
+    return UserTimezoneOut(tg_user_id=user_id, timezone=row.timezone)
+
+
+async def set_user_timezone(
+    session: AsyncSession, user_id: int, payload: UserTimezoneSet
+) -> UserTimezoneOut:
+    timezone = _validate_timezone(payload.timezone)
+    current = (
+        await session.execute(
+            select(UserSetting).where(UserSetting.tg_user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if current is None:
+        current = UserSetting(tg_user_id=user_id, timezone=timezone)
+        session.add(current)
+    else:
+        current.timezone = timezone
+    await session.commit()
+    return UserTimezoneOut(tg_user_id=user_id, timezone=timezone)

@@ -59,6 +59,13 @@ class EventParticipant(Base):
     event_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("events.id", ondelete="CASCADE"), primary_key=True
     )
-    tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, index=True)
+    participant_label: Mapped[str] = mapped_column(Text, primary_key=True, index=True)
 
     event: Mapped[Event] = relationship(back_populates="participants")
+
+
+class UserSetting(Base):
+    __tablename__ = "user_settings"
+
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    timezone: Mapped[str] = mapped_column(Text, default="UTC", server_default="UTC")

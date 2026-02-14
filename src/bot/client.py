@@ -12,6 +12,7 @@ from .schemas import (
     EventOut,
     EventUpdate,
     ReminderOut,
+    UserTimezoneOut,
 )
 
 
@@ -50,7 +51,7 @@ class DiaryServiceClient:
                         title=item["title"],
                         start_at=datetime.fromisoformat(item["start_at"]),
                         end_at=datetime.fromisoformat(item["end_at"]),
-                        conflicting_user_ids=item["conflicting_user_ids"],
+                        conflicting_participants=item["conflicting_participants"],
                     )
                     for item in data.get("conflicts", [])
                 ]
@@ -87,7 +88,7 @@ class DiaryServiceClient:
                 "title": event.title,
                 "start_at": event.start_at.isoformat(),
                 "end_at": event.end_at.isoformat(),
-                "participant_tg_user_ids": event.participant_tg_user_ids,
+                "participants": event.participants,
             },
         )
         return EventOut(
@@ -96,7 +97,7 @@ class DiaryServiceClient:
             title=data["title"],
             start_at=datetime.fromisoformat(data["start_at"]),
             end_at=datetime.fromisoformat(data["end_at"]),
-            participant_tg_user_ids=data["participant_tg_user_ids"],
+            participants=data["participants"],
         )
 
     async def update_event(
@@ -114,7 +115,7 @@ class DiaryServiceClient:
                 "title": event.title,
                 "start_at": event.start_at.isoformat(),
                 "end_at": event.end_at.isoformat(),
-                "participant_tg_user_ids": event.participant_tg_user_ids,
+                "participants": event.participants,
             },
         )
         return EventOut(
@@ -123,7 +124,7 @@ class DiaryServiceClient:
             title=data["title"],
             start_at=datetime.fromisoformat(data["start_at"]),
             end_at=datetime.fromisoformat(data["end_at"]),
-            participant_tg_user_ids=data["participant_tg_user_ids"],
+            participants=data["participants"],
         )
 
     async def delete_event(
@@ -137,13 +138,19 @@ class DiaryServiceClient:
         )
 
     async def list_events(
-        self, session: aiohttp.ClientSession, user_id: int
+        self,
+        session: aiohttp.ClientSession,
+        user_id: int,
+        participant_labels: list[str],
     ) -> list[EventOut]:
         data = await self._json_request(
             session,
             "GET",
             "/events",
-            params={"user_id": str(user_id)},
+            params={
+                "user_id": str(user_id),
+                "participant_labels": ",".join(participant_labels),
+            },
         )
         items: list[EventOut] = []
         for row in data:
@@ -154,7 +161,7 @@ class DiaryServiceClient:
                     title=row["title"],
                     start_at=datetime.fromisoformat(row["start_at"]),
                     end_at=datetime.fromisoformat(row["end_at"]),
-                    participant_tg_user_ids=row["participant_tg_user_ids"],
+                    participants=row["participants"],
                 )
             )
         return items
@@ -176,3 +183,20 @@ class DiaryServiceClient:
                 )
             )
         return reminders
+
+    async def get_user_timezone(
+        self, session: aiohttp.ClientSession, user_id: int
+    ) -> UserTimezoneOut:
+        data = await self._json_request(session, "GET", f"/users/{user_id}/timezone")
+        return UserTimezoneOut(tg_user_id=data["tg_user_id"], timezone=data["timezone"])
+
+    async def set_user_timezone(
+        self, session: aiohttp.ClientSession, user_id: int, timezone: str
+    ) -> UserTimezoneOut:
+        data = await self._json_request(
+            session,
+            "PUT",
+            f"/users/{user_id}/timezone",
+            json_payload={"timezone": timezone},
+        )
+        return UserTimezoneOut(tg_user_id=data["tg_user_id"], timezone=data["timezone"])

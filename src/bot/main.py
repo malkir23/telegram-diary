@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -18,68 +19,157 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "Commands:\n"
+    "/set_timezone <IANA timezone>  (example: Europe/Kyiv)\n"
+    "/timezone\n"
     "/create_event <title> | <start> | <end> | <participants>\n"
     "/update_event <id> | <title> | <start> | <end> | <participants>\n"
     "/delete_event <id>\n"
     "/events\n\n"
-    "Time format: YYYY-MM-DD HH:MM (UTC)\n"
-    "Participants: comma-separated Telegram user IDs or '-'"
+    "Time format: YYYY-MM-DD HH:MM (in your timezone)\n"
+    "Participants: comma-separated tags/names or '-'"
 )
+
+KNOWN_USERS: dict[str, int] = {}
 
 
 def _service_client() -> DiaryServiceClient:
     return DiaryServiceClient()
 
 
-def _parse_datetime(raw: str) -> datetime:
+def _normalize_participant_label(value: str) -> str:
+    candidate = value.strip()
+    if candidate.startswith("@"):
+        candidate = candidate[1:]
+    return candidate.casefold()
+
+
+def _register_user_aliases(message: Message) -> None:
+    if message.from_user is None:
+        return
+    if message.from_user.username:
+        KNOWN_USERS[_normalize_participant_label(message.from_user.username)] = (
+            message.from_user.id
+        )
+    full_name = message.from_user.full_name.strip()
+    if full_name:
+        KNOWN_USERS[_normalize_participant_label(full_name)] = message.from_user.id
+
+
+def _parse_local_datetime(raw: str, timezone: str) -> datetime:
     value = raw.strip()
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         parsed = datetime.strptime(value, "%Y-%m-%d %H:%M")
+
+    tz = ZoneInfo(timezone)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
+        parsed = parsed.replace(tzinfo=tz)
+    return parsed.astimezone(UTC)
 
 
-def _parse_participants(raw: str) -> list[int]:
+def _parse_participants(raw: str) -> list[str]:
     value = raw.strip()
     if value in {"", "-"}:
         return []
-    result: list[int] = []
+    result: list[str] = []
     for item in value.split(","):
         candidate = item.strip()
-        if not candidate.isdigit():
-            raise ValueError(f"Invalid participant id: {candidate}")
-        result.append(int(candidate))
+        if not candidate:
+            continue
+        result.append(_normalize_participant_label(candidate))
     return sorted(set(result))
 
 
-def _format_conflicts(error: ServiceConflictError) -> str:
-    lines = ["Conflict detected with existing events:"]
+def _to_user_tz(dt: datetime, timezone: str) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(ZoneInfo(timezone))
+
+
+def _format_conflicts(error: ServiceConflictError, timezone: str) -> str:
+    lines = [f"Conflict detected with existing events (timezone: {timezone}):"]
     for item in error.conflicts[:10]:
-        users = ", ".join(str(user_id) for user_id in item.conflicting_user_ids)
+        users = ", ".join(item.conflicting_participants) or "(creator overlap)"
+        start = _to_user_tz(item.start_at, timezone)
+        end = _to_user_tz(item.end_at, timezone)
         lines.append(
-            f"- #{item.event_id} {item.title} ({item.start_at:%Y-%m-%d %H:%M} - "
-            f"{item.end_at:%Y-%m-%d %H:%M}), users: {users}"
+            f"- #{item.event_id} {item.title} ({start:%Y-%m-%d %H:%M} - "
+            f"{end:%Y-%m-%d %H:%M}), participants: {users}"
         )
     return "\n".join(lines)
 
 
+async def _get_user_timezone(user_id: int) -> str:
+    async with aiohttp.ClientSession() as session:
+        result = await _service_client().get_user_timezone(session, user_id)
+    return result.timezone
+
+
 async def start_handler(message: Message) -> None:
+    _register_user_aliases(message)
     await message.answer(
         "Send plain text to store diary entry.\nUse /help to manage events."
     )
 
 
 async def help_handler(message: Message) -> None:
+    _register_user_aliases(message)
     await message.answer(HELP_TEXT)
+
+
+async def timezone_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _register_user_aliases(message)
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        await message.answer(f"Your timezone: {timezone}")
+    except Exception as exc:
+        logger.exception("Failed to get timezone")
+        await message.answer(f"Failed to get timezone: {exc}")
+
+
+async def set_timezone_handler(message: Message) -> None:
+    if message.from_user is None or message.text is None:
+        return
+    _register_user_aliases(message)
+    raw = message.text.replace("/set_timezone", "", 1).strip()
+    if not raw:
+        await message.answer("Usage: /set_timezone Europe/Kyiv")
+        return
+
+    try:
+        ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        await message.answer(
+            "Invalid timezone. Use IANA name, for example: Europe/Kyiv"
+        )
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = await _service_client().set_user_timezone(
+                session, message.from_user.id, raw
+            )
+        await message.answer(f"Timezone updated: {result.timezone}")
+    except Exception as exc:
+        logger.exception("Failed to set timezone")
+        await message.answer(f"Failed to set timezone: {exc}")
 
 
 async def create_event_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
+    _register_user_aliases(message)
     raw = message.text.replace("/create_event", "", 1).strip()
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+    except Exception as exc:
+        logger.exception("Failed to get timezone")
+        await message.answer(f"Failed to get timezone: {exc}")
+        return
+
     try:
         title, start_raw, end_raw, participants_raw = [
             part.strip() for part in raw.split("|", maxsplit=3)
@@ -87,9 +177,9 @@ async def create_event_handler(message: Message) -> None:
         payload = EventCreate(
             creator_tg_user_id=message.from_user.id,
             title=title,
-            start_at=_parse_datetime(start_raw),
-            end_at=_parse_datetime(end_raw),
-            participant_tg_user_ids=_parse_participants(participants_raw),
+            start_at=_parse_local_datetime(start_raw, timezone),
+            end_at=_parse_local_datetime(end_raw, timezone),
+            participants=_parse_participants(participants_raw),
         )
     except Exception:
         await message.answer("Invalid format.\n" + HELP_TEXT)
@@ -103,24 +193,31 @@ async def create_event_handler(message: Message) -> None:
             if message.from_user.username
             else message.from_user.full_name
         )
-        recipients = {created.creator_tg_user_id, *created.participant_tg_user_ids}
-        notification_text = (
-            "New event created.\n"
-            f"Who: {created_by} (id={message.from_user.id})\n"
-            f"What: {created.title}\n"
-            f"When: {created.start_at:%Y-%m-%d %H:%M} - {created.end_at:%Y-%m-%d %H:%M} UTC\n"
-            f"Event ID: #{created.id}"
-        )
+        recipients = {created.creator_tg_user_id}
+        for label in created.participants:
+            user_id = KNOWN_USERS.get(_normalize_participant_label(label))
+            if user_id is not None:
+                recipients.add(user_id)
 
         for user_id in recipients:
             try:
+                user_tz = await _get_user_timezone(user_id)
+                start_local = _to_user_tz(created.start_at, user_tz)
+                end_local = _to_user_tz(created.end_at, user_tz)
+                notification_text = (
+                    "New event created.\n"
+                    f"Who: {created_by} (id={message.from_user.id})\n"
+                    f"What: {created.title}\n"
+                    f"When: {start_local:%Y-%m-%d %H:%M} - {end_local:%Y-%m-%d %H:%M} ({user_tz})\n"
+                    f"Event ID: #{created.id}"
+                )
                 await message.bot.send_message(user_id, notification_text)
             except Exception:
                 logger.warning(
                     "Cannot notify user_id=%s about event_id=%s", user_id, created.id
                 )
     except ServiceConflictError as conflict:
-        await message.answer(_format_conflicts(conflict))
+        await message.answer(_format_conflicts(conflict, timezone))
     except Exception as exc:
         logger.exception("Failed to create event")
         await message.answer(f"Failed to create event: {exc}")
@@ -129,7 +226,15 @@ async def create_event_handler(message: Message) -> None:
 async def update_event_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
+    _register_user_aliases(message)
     raw = message.text.replace("/update_event", "", 1).strip()
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+    except Exception as exc:
+        logger.exception("Failed to get timezone")
+        await message.answer(f"Failed to get timezone: {exc}")
+        return
+
     try:
         event_id_raw, title, start_raw, end_raw, participants_raw = [
             part.strip() for part in raw.split("|", maxsplit=4)
@@ -140,9 +245,9 @@ async def update_event_handler(message: Message) -> None:
         payload = EventUpdate(
             actor_tg_user_id=message.from_user.id,
             title=title,
-            start_at=_parse_datetime(start_raw),
-            end_at=_parse_datetime(end_raw),
-            participant_tg_user_ids=_parse_participants(participants_raw),
+            start_at=_parse_local_datetime(start_raw, timezone),
+            end_at=_parse_local_datetime(end_raw, timezone),
+            participants=_parse_participants(participants_raw),
         )
     except Exception:
         await message.answer("Invalid format.\n" + HELP_TEXT)
@@ -151,12 +256,14 @@ async def update_event_handler(message: Message) -> None:
     try:
         async with aiohttp.ClientSession() as session:
             updated = await _service_client().update_event(session, event_id, payload)
+        start_local = _to_user_tz(updated.start_at, timezone)
+        end_local = _to_user_tz(updated.end_at, timezone)
         await message.answer(
             f"Event updated: #{updated.id} {updated.title} "
-            f"{updated.start_at:%Y-%m-%d %H:%M} - {updated.end_at:%Y-%m-%d %H:%M} UTC"
+            f"{start_local:%Y-%m-%d %H:%M} - {end_local:%Y-%m-%d %H:%M} ({timezone})"
         )
     except ServiceConflictError as conflict:
-        await message.answer(_format_conflicts(conflict))
+        await message.answer(_format_conflicts(conflict, timezone))
     except Exception as exc:
         logger.exception("Failed to update event")
         await message.answer(f"Failed to update event: {exc}")
@@ -165,6 +272,7 @@ async def update_event_handler(message: Message) -> None:
 async def delete_event_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
+    _register_user_aliases(message)
     raw = message.text.replace("/delete_event", "", 1).strip()
     if not raw.isdigit():
         await message.answer("Usage: /delete_event <id>")
@@ -174,9 +282,7 @@ async def delete_event_handler(message: Message) -> None:
     try:
         async with aiohttp.ClientSession() as session:
             await _service_client().delete_event(
-                session,
-                event_id,
-                EventDelete(actor_tg_user_id=message.from_user.id),
+                session, event_id, EventDelete(actor_tg_user_id=message.from_user.id)
             )
         await message.answer(f"Event #{event_id} deleted.")
     except Exception as exc:
@@ -187,9 +293,21 @@ async def delete_event_handler(message: Message) -> None:
 async def list_events_handler(message: Message) -> None:
     if message.from_user is None:
         return
+    _register_user_aliases(message)
     try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        participant_labels: list[str] = []
+        if message.from_user.username:
+            participant_labels.append(
+                _normalize_participant_label(message.from_user.username)
+            )
+        full_name = message.from_user.full_name.strip()
+        if full_name:
+            participant_labels.append(_normalize_participant_label(full_name))
         async with aiohttp.ClientSession() as session:
-            events = await _service_client().list_events(session, message.from_user.id)
+            events = await _service_client().list_events(
+                session, message.from_user.id, participant_labels
+            )
     except Exception as exc:
         logger.exception("Failed to list events")
         await message.answer(f"Failed to list events: {exc}")
@@ -199,14 +317,14 @@ async def list_events_handler(message: Message) -> None:
         await message.answer("No events found.")
         return
 
-    lines = ["Your events:"]
+    lines = [f"Your events (timezone: {timezone}):"]
     for item in events[:20]:
-        participants = (
-            ",".join(str(user_id) for user_id in item.participant_tg_user_ids) or "-"
-        )
+        start_local = _to_user_tz(item.start_at, timezone)
+        end_local = _to_user_tz(item.end_at, timezone)
+        participants = ",".join(item.participants) or "-"
         lines.append(
             f"#{item.id} {item.title}\n"
-            f"{item.start_at:%Y-%m-%d %H:%M} - {item.end_at:%Y-%m-%d %H:%M} UTC\n"
+            f"{start_local:%Y-%m-%d %H:%M} - {end_local:%Y-%m-%d %H:%M} ({timezone})\n"
             f"participants: {participants}"
         )
     await message.answer("\n\n".join(lines))
@@ -215,6 +333,7 @@ async def list_events_handler(message: Message) -> None:
 async def text_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
+    _register_user_aliases(message)
 
     entry = DiaryEntryCreate(
         tg_user_id=message.from_user.id,
@@ -241,12 +360,14 @@ async def reminders_loop(bot: Bot) -> None:
             async with aiohttp.ClientSession() as session:
                 reminders = await _service_client().claim_due_reminders(session)
             for item in reminders:
+                timezone = await _get_user_timezone(item.creator_tg_user_id)
+                start_local = _to_user_tz(item.start_at, timezone)
                 await bot.send_message(
                     item.creator_tg_user_id,
                     (
-                        f"Reminder: in about 1 hour your event starts.\n"
+                        "Reminder: in about 1 hour your event starts.\n"
                         f"#{item.event_id} {item.title}\n"
-                        f"Start: {item.start_at:%Y-%m-%d %H:%M} UTC"
+                        f"Start: {start_local:%Y-%m-%d %H:%M} ({timezone})"
                     ),
                 )
         except asyncio.CancelledError:
@@ -262,6 +383,8 @@ async def run() -> None:
 
     dp.message.register(start_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
+    dp.message.register(set_timezone_handler, Command("set_timezone"))
+    dp.message.register(timezone_handler, Command("timezone"))
     dp.message.register(create_event_handler, Command("create_event"))
     dp.message.register(update_event_handler, Command("update_event"))
     dp.message.register(delete_event_handler, Command("delete_event"))

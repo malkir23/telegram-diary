@@ -47,6 +47,8 @@ uv run python main.py
 - `DELETE /events/{event_id}`
 - `GET /events?user_id=<tg_user_id>`
 - `POST /events/reminders/claim`
+- `GET /users/{user_id}/timezone`
+- `PUT /users/{user_id}/timezone`
 
 Payload example:
 
@@ -78,11 +80,17 @@ Service endpoint is fixed in code for local orchestration:
 - `/update_event <id> | <title> | <start> | <end> | <participants>`
 - `/delete_event <id>`
 - `/events`
+- `/set_timezone <IANA timezone>`
+- `/timezone`
 
-Time format: `YYYY-MM-DD HH:MM` in UTC.
-Participants: comma-separated Telegram user IDs, or `-`.
+Time format: `YYYY-MM-DD HH:MM` in your configured timezone.
+Participants: comma-separated tags/names (for example: `@alice,bob smith`), or `-`.
+
+`start_at` and `end_at` are converted to UTC before storing in database.
+When events are shown back to user, time is converted from UTC to user's timezone.
 
 If an event intersects in time with existing events for creator or participants, bot will return conflict details.
 Bot also sends reminder to event creator about 1 hour before start.
 When an event is created, bot sends notification to all event participants (including creator):
 who created it, what was created, and event time.
+For participants by name/tag, direct notification works when that alias is known to bot from prior interaction.

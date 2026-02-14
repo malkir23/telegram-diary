@@ -11,10 +11,18 @@ from .repository import (
     create_diary_entry,
     create_event,
     delete_event,
+    get_user_timezone,
     list_events_for_user,
+    set_user_timezone,
     update_event,
 )
-from .schemas import DiaryEntryCreate, EventCreate, EventDelete, EventUpdate
+from .schemas import (
+    DiaryEntryCreate,
+    EventCreate,
+    EventDelete,
+    EventUpdate,
+    UserTimezoneSet,
+)
 
 
 async def _parse_json(request: web.Request) -> dict:
@@ -124,9 +132,13 @@ async def list_events_handler(request: web.Request) -> web.Response:
             {"detail": "user_id is required and must be integer"}, status=400
         )
     user_id = int(user_id_raw)
+    labels_raw = request.query.get("participant_labels", "")
+    participant_labels = [
+        item.strip() for item in labels_raw.split(",") if item.strip()
+    ]
 
     async with session_scope() as session:
-        events = await list_events_for_user(session, user_id)
+        events = await list_events_for_user(session, user_id, participant_labels)
     return web.json_response(
         [item.model_dump(mode="json") for item in events], status=200
     )
@@ -141,6 +153,36 @@ async def claim_reminders_handler(_: web.Request) -> web.Response:
     )
 
 
+async def get_user_timezone_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.match_info.get("user_id", "0")
+    if not user_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid user_id"}, status=400)
+    user_id = int(user_id_raw)
+
+    async with session_scope() as session:
+        result = await get_user_timezone(session, user_id)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
+async def set_user_timezone_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.match_info.get("user_id", "0")
+    if not user_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid user_id"}, status=400)
+    user_id = int(user_id_raw)
+
+    try:
+        payload = UserTimezoneSet.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            result = await set_user_timezone(session, user_id, payload)
+        except ValueError as exc:
+            return web.json_response({"detail": str(exc)}, status=422)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
 def setup_routes(app: web.Application) -> None:
     app.router.add_get("/health", health)
     app.router.add_post("/diary-entries", create_entry)
@@ -149,3 +191,5 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_delete("/events/{event_id}", delete_event_handler)
     app.router.add_get("/events", list_events_handler)
     app.router.add_post("/events/reminders/claim", claim_reminders_handler)
+    app.router.add_get("/users/{user_id}/timezone", get_user_timezone_handler)
+    app.router.add_put("/users/{user_id}/timezone", set_user_timezone_handler)

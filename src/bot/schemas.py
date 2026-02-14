@@ -17,7 +17,7 @@ class EventCreate:
     title: str
     start_at: datetime
     end_at: datetime
-    participant_tg_user_ids: list[int]
+    participants: list[str]
 
 
 @dataclass(slots=True)
@@ -26,7 +26,7 @@ class EventUpdate:
     title: str
     start_at: datetime
     end_at: datetime
-    participant_tg_user_ids: list[int]
+    participants: list[str]
 
 
 @dataclass(slots=True)
@@ -41,7 +41,7 @@ class EventOut:
     title: str
     start_at: datetime
     end_at: datetime
-    participant_tg_user_ids: list[int]
+    participants: list[str]
 
 
 @dataclass(slots=True)
@@ -50,7 +50,7 @@ class ConflictItem:
     title: str
     start_at: datetime
     end_at: datetime
-    conflicting_user_ids: list[int]
+    conflicting_participants: list[str]
 
 
 @dataclass(slots=True)
@@ -59,3 +59,9 @@ class ReminderOut:
     creator_tg_user_id: int
     title: str
     start_at: datetime
+
+
+@dataclass(slots=True)
+class UserTimezoneOut:
+    tg_user_id: int
+    timezone: str
