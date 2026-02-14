@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 
-from aiohttp import web
 from sqlalchemy import text
 
 from .session import SessionLocal, engine
@@ -21,9 +20,9 @@ async def close_db() -> None:
     await engine.dispose()
 
 
-async def on_startup(_: web.Application) -> None:
+async def on_startup() -> None:
     await init_db()
 
 
-async def on_cleanup(_: web.Application) -> None:
+async def on_cleanup() -> None:
     await close_db()
