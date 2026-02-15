@@ -12,6 +12,28 @@ class DiaryEntryCreate:
 
 
 @dataclass(slots=True)
+class DiaryEntryOut:
+    id: int
+    tg_user_id: int
+    username: str | None
+    chat_id: int
+    message_id: int
+    text: str
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class DiaryEntryUpdate:
+    actor_tg_user_id: int
+    text: str
+
+
+@dataclass(slots=True)
+class DiaryEntryDelete:
+    actor_tg_user_id: int
+
+
+@dataclass(slots=True)
 class EventCreate:
     creator_tg_user_id: int
     title: str

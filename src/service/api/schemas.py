@@ -13,7 +13,21 @@ class DiaryEntryCreate(BaseModel):
 
 class DiaryEntryOut(BaseModel):
     id: int
+    tg_user_id: int
+    username: str | None
+    chat_id: int
+    message_id: int
+    text: str
     created_at: datetime
+
+
+class DiaryEntryUpdate(BaseModel):
+    actor_tg_user_id: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=4096)
+
+
+class DiaryEntryDelete(BaseModel):
+    actor_tg_user_id: int = Field(ge=1)
 
 
 class EventCreate(BaseModel):

@@ -11,6 +11,9 @@ from ..db.models import DiaryEntry, Event, EventParticipant, User, UserSetting
 from .schemas import (
     ConflictItem,
     DiaryEntryCreate,
+    DiaryEntryDelete,
+    DiaryEntryOut,
+    DiaryEntryUpdate,
     EventCreate,
     EventDelete,
     EventOut,
@@ -22,6 +25,18 @@ from .schemas import (
     UserTimezoneSet,
     UserUpsert,
 )
+
+
+def _diary_entry_to_out(entry: DiaryEntry) -> DiaryEntryOut:
+    return DiaryEntryOut(
+        id=entry.id,
+        tg_user_id=entry.tg_user_id,
+        username=entry.username,
+        chat_id=entry.chat_id,
+        message_id=entry.message_id,
+        text=entry.text,
+        created_at=entry.created_at,
+    )
 
 
 async def create_diary_entry(
@@ -38,6 +53,55 @@ async def create_diary_entry(
     await session.commit()
     await session.refresh(entry)
     return entry
+
+
+async def list_diary_entries_for_user(
+    session: AsyncSession, user_id: int
+) -> list[DiaryEntryOut]:
+    query = (
+        select(DiaryEntry)
+        .where(DiaryEntry.tg_user_id == user_id)
+        .order_by(DiaryEntry.created_at.desc(), DiaryEntry.id.desc())
+    )
+    rows = (await session.execute(query)).scalars()
+    return [_diary_entry_to_out(item) for item in rows]
+
+
+async def update_diary_entry(
+    session: AsyncSession,
+    entry_id: int,
+    payload: DiaryEntryUpdate,
+) -> tuple[DiaryEntryOut | None, bool]:
+    row = (
+        await session.execute(select(DiaryEntry).where(DiaryEntry.id == entry_id))
+    ).scalar_one_or_none()
+    if row is None:
+        return None, False
+    if row.tg_user_id != payload.actor_tg_user_id:
+        raise PermissionError("Only owner can update diary entry")
+
+    row.text = payload.text
+    await session.commit()
+    await session.refresh(row)
+    return _diary_entry_to_out(row), True
+
+
+async def delete_diary_entry(
+    session: AsyncSession,
+    entry_id: int,
+    payload: DiaryEntryDelete,
+) -> bool:
+    row = (
+        await session.execute(select(DiaryEntry).where(DiaryEntry.id == entry_id))
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    if row.tg_user_id != payload.actor_tg_user_id:
+        raise PermissionError("Only owner can delete diary entry")
+
+    await session.delete(row)
+    await session.commit()
+    return True
 
 
 def _normalize_participants(participants: list[int]) -> list[int]:

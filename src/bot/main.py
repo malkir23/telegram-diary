@@ -13,13 +13,24 @@ from aiogram.types import Message
 
 from .client import DiaryServiceClient, ServiceConflictError
 from .config import settings
-from .schemas import DiaryEntryCreate, EventCreate, EventDelete, EventUpdate
+from .schemas import (
+    DiaryEntryCreate,
+    DiaryEntryDelete,
+    DiaryEntryUpdate,
+    EventCreate,
+    EventDelete,
+    EventUpdate,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "Commands:\n"
+    "/diary\n"
+    "/edit_diary <id> | <new text>\n"
+    "/delete_diary <id>\n"
+    "\n"
     "/set_timezone <IANA timezone>  (example: Europe/Kyiv)\n"
     "/timezone\n"
     "/create_event <title> | <start> | <end> | <participants>\n"
@@ -245,6 +256,85 @@ async def create_event_handler(message: Message) -> None:
         await message.answer(f"Failed to create event: {exc}")
 
 
+async def list_diary_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            entries = await _service_client().list_entries(
+                session, message.from_user.id
+            )
+    except Exception as exc:
+        logger.exception("Failed to list diary entries")
+        await message.answer(f"Failed to list diary entries: {exc}")
+        return
+
+    if not entries:
+        await message.answer("No diary entries found.")
+        return
+
+    lines = ["Your diary entries:"]
+    for item in entries[:20]:
+        lines.append(f"#{item.id} [{item.created_at:%Y-%m-%d %H:%M}]\n{item.text}")
+    await message.answer("\n\n".join(lines))
+
+
+async def edit_diary_handler(message: Message) -> None:
+    if message.text is None or message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = message.text.replace("/edit_diary", "", 1).strip()
+    try:
+        entry_id_raw, text = [part.strip() for part in raw.split("|", maxsplit=1)]
+        if not entry_id_raw.isdigit():
+            raise ValueError("entry_id")
+        if not text:
+            raise ValueError("text")
+        entry_id = int(entry_id_raw)
+    except Exception:
+        await message.answer("Usage: /edit_diary <id> | <new text>")
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            updated = await _service_client().update_entry(
+                session,
+                entry_id,
+                DiaryEntryUpdate(actor_tg_user_id=message.from_user.id, text=text),
+            )
+        await message.answer(
+            f"Diary entry #{updated.id} updated.\n[{updated.created_at:%Y-%m-%d %H:%M}] {updated.text}"
+        )
+    except Exception as exc:
+        logger.exception("Failed to update diary entry")
+        await message.answer(f"Failed to update diary entry: {exc}")
+
+
+async def delete_diary_handler(message: Message) -> None:
+    if message.text is None or message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = message.text.replace("/delete_diary", "", 1).strip()
+    if not raw.isdigit():
+        await message.answer("Usage: /delete_diary <id>")
+        return
+    entry_id = int(raw)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            await _service_client().delete_entry(
+                session,
+                entry_id,
+                DiaryEntryDelete(actor_tg_user_id=message.from_user.id),
+            )
+        await message.answer(f"Diary entry #{entry_id} deleted.")
+    except Exception as exc:
+        logger.exception("Failed to delete diary entry")
+        await message.answer(f"Failed to delete diary entry: {exc}")
+
+
 async def update_event_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
@@ -462,6 +552,9 @@ async def run() -> None:
 
     dp.message.register(start_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
+    dp.message.register(list_diary_handler, Command("diary"))
+    dp.message.register(edit_diary_handler, Command("edit_diary"))
+    dp.message.register(delete_diary_handler, Command("delete_diary"))
     dp.message.register(set_timezone_handler, Command("set_timezone"))
     dp.message.register(timezone_handler, Command("timezone"))
     dp.message.register(create_event_handler, Command("create_event"))

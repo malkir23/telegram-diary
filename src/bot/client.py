@@ -7,6 +7,9 @@ import aiohttp
 from .schemas import (
     ConflictItem,
     DiaryEntryCreate,
+    DiaryEntryDelete,
+    DiaryEntryOut,
+    DiaryEntryUpdate,
     EventCreate,
     EventDelete,
     EventOut,
@@ -76,6 +79,68 @@ class DiaryServiceClient:
                 "message_id": entry.message_id,
                 "text": entry.text,
             },
+        )
+
+    async def list_entries(
+        self, session: aiohttp.ClientSession, user_id: int
+    ) -> list[DiaryEntryOut]:
+        data = await self._json_request(
+            session,
+            "GET",
+            "/diary-entries",
+            params={"user_id": str(user_id)},
+        )
+        result: list[DiaryEntryOut] = []
+        for row in data:
+            result.append(
+                DiaryEntryOut(
+                    id=row["id"],
+                    tg_user_id=row["tg_user_id"],
+                    username=row["username"],
+                    chat_id=row["chat_id"],
+                    message_id=row["message_id"],
+                    text=row["text"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+            )
+        return result
+
+    async def update_entry(
+        self,
+        session: aiohttp.ClientSession,
+        entry_id: int,
+        payload: DiaryEntryUpdate,
+    ) -> DiaryEntryOut:
+        data = await self._json_request(
+            session,
+            "PUT",
+            f"/diary-entries/{entry_id}",
+            json_payload={
+                "actor_tg_user_id": payload.actor_tg_user_id,
+                "text": payload.text,
+            },
+        )
+        return DiaryEntryOut(
+            id=data["id"],
+            tg_user_id=data["tg_user_id"],
+            username=data["username"],
+            chat_id=data["chat_id"],
+            message_id=data["message_id"],
+            text=data["text"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+    async def delete_entry(
+        self,
+        session: aiohttp.ClientSession,
+        entry_id: int,
+        payload: DiaryEntryDelete,
+    ) -> None:
+        await self._json_request(
+            session,
+            "DELETE",
+            f"/diary-entries/{entry_id}",
+            json_payload={"actor_tg_user_id": payload.actor_tg_user_id},
         )
 
     async def create_event(

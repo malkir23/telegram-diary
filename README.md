@@ -43,6 +43,9 @@ uv run python main.py
 
 - `GET /health`
 - `POST /diary-entries`
+- `GET /diary-entries?user_id=<tg_user_id>`
+- `PUT /diary-entries/{entry_id}`
+- `DELETE /diary-entries/{entry_id}`
 - `POST /events`
 - `PUT /events/{event_id}`
 - `DELETE /events/{event_id}`
@@ -80,6 +83,9 @@ Service endpoint is fixed in code for local orchestration:
 
 ## Bot event commands
 
+- `/diary`
+- `/edit_diary <id> | <new text>`
+- `/delete_diary <id>`
 - `/create_event <title> | <start> | <end> | <participants>`
 - `/update_event <id> | <title> | <start> | <end> | <participants>`
 - `/delete_event <id>`

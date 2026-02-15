@@ -10,17 +10,22 @@ from .repository import (
     claim_due_reminders,
     create_diary_entry,
     create_event,
+    delete_diary_entry,
     delete_event,
     get_user_timezone,
+    list_diary_entries_for_user,
     list_events_for_user,
     mark_reminder_sent,
     resolve_users_by_labels,
     set_user_timezone,
+    update_diary_entry,
     update_event,
     upsert_user,
 )
 from .schemas import (
     DiaryEntryCreate,
+    DiaryEntryDelete,
+    DiaryEntryUpdate,
     EventCreate,
     EventDelete,
     EventUpdate,
@@ -66,6 +71,65 @@ async def create_entry(request: web.Request) -> web.Response:
         },
         status=201,
     )
+
+
+async def list_entries_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.query.get("user_id", "")
+    if not user_id_raw.isdigit():
+        return web.json_response(
+            {"detail": "user_id is required and must be integer"}, status=400
+        )
+    user_id = int(user_id_raw)
+
+    async with session_scope() as session:
+        entries = await list_diary_entries_for_user(session, user_id)
+    return web.json_response(
+        [item.model_dump(mode="json") for item in entries], status=200
+    )
+
+
+async def update_entry_handler(request: web.Request) -> web.Response:
+    entry_id_raw = request.match_info.get("entry_id", "0")
+    if not entry_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid entry_id"}, status=400)
+    entry_id = int(entry_id_raw)
+
+    try:
+        payload = DiaryEntryUpdate.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            updated, exists = await update_diary_entry(session, entry_id, payload)
+        except PermissionError as exc:
+            return web.json_response({"detail": str(exc)}, status=403)
+
+    if not exists:
+        return web.json_response({"detail": "Diary entry not found"}, status=404)
+    return web.json_response(updated.model_dump(mode="json"), status=200)
+
+
+async def delete_entry_handler(request: web.Request) -> web.Response:
+    entry_id_raw = request.match_info.get("entry_id", "0")
+    if not entry_id_raw.isdigit():
+        return web.json_response({"detail": "Invalid entry_id"}, status=400)
+    entry_id = int(entry_id_raw)
+
+    try:
+        payload = DiaryEntryDelete.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            deleted = await delete_diary_entry(session, entry_id, payload)
+        except PermissionError as exc:
+            return web.json_response({"detail": str(exc)}, status=403)
+
+    if not deleted:
+        return web.json_response({"detail": "Diary entry not found"}, status=404)
+    return web.json_response({"status": "deleted"}, status=200)
 
 
 async def create_event_handler(request: web.Request) -> web.Response:
@@ -229,6 +293,9 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_get("/", root)
     app.router.add_get("/health", health)
     app.router.add_post("/diary-entries", create_entry)
+    app.router.add_get("/diary-entries", list_entries_handler)
+    app.router.add_put("/diary-entries/{entry_id}", update_entry_handler)
+    app.router.add_delete("/diary-entries/{entry_id}", delete_entry_handler)
     app.router.add_post("/events", create_event_handler)
     app.router.add_put("/events/{event_id}", update_event_handler)
     app.router.add_delete("/events/{event_id}", delete_event_handler)
