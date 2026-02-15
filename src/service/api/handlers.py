@@ -46,6 +46,10 @@ async def health(_: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def root(_: web.Request) -> web.Response:
+    return web.json_response({"status": "ok"})
+
+
 async def create_entry(request: web.Request) -> web.Response:
     try:
         payload = DiaryEntryCreate.model_validate(await _parse_json(request))
@@ -222,6 +226,7 @@ async def resolve_users_handler(request: web.Request) -> web.Response:
 
 
 def setup_routes(app: web.Application) -> None:
+    app.router.add_get("/", root)
     app.router.add_get("/health", health)
     app.router.add_post("/diary-entries", create_entry)
     app.router.add_post("/events", create_event_handler)

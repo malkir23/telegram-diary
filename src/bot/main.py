@@ -473,6 +473,7 @@ async def run() -> None:
 
     reminder_task = asyncio.create_task(reminders_loop(bot), name="reminders-loop")
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
         reminder_task.cancel()
