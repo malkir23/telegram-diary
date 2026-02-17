@@ -5,7 +5,16 @@ from datetime import datetime
 import aiohttp
 
 from .schemas import (
+    BudgetCategoryStats,
+    BudgetContributionCreate,
+    BudgetContributionOut,
+    BudgetContributorStats,
+    BudgetDailyLimitOut,
+    BudgetDailyLimitSet,
+    BudgetSpenderStats,
+    BudgetSummaryOut,
     ConflictItem,
+    DailyLimitStatusOut,
     DiaryEntryCreate,
     DiaryEntryDelete,
     DiaryEntryOut,
@@ -14,6 +23,9 @@ from .schemas import (
     EventDelete,
     EventOut,
     EventUpdate,
+    ExpenseCreate,
+    ExpenseCreateOut,
+    ExpenseOut,
     ReminderOut,
     UserOut,
     UserResolveOut,
@@ -255,6 +267,208 @@ class DiaryServiceClient:
             "POST",
             f"/events/{event_id}/reminder-sent",
             json_payload={},
+        )
+
+    async def add_budget_contribution(
+        self,
+        session: aiohttp.ClientSession,
+        payload: BudgetContributionCreate,
+    ) -> BudgetContributionOut:
+        data = await self._json_request(
+            session,
+            "POST",
+            "/budget/contributions",
+            json_payload={
+                "tg_user_id": payload.tg_user_id,
+                "amount": payload.amount,
+                "comment": payload.comment,
+            },
+        )
+        return BudgetContributionOut(
+            id=data["id"],
+            tg_user_id=data["tg_user_id"],
+            amount=data["amount"],
+            comment=data["comment"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+    async def add_expense(
+        self,
+        session: aiohttp.ClientSession,
+        payload: ExpenseCreate,
+    ) -> ExpenseCreateOut:
+        data = await self._json_request(
+            session,
+            "POST",
+            "/budget/expenses",
+            json_payload={
+                "tg_user_id": payload.tg_user_id,
+                "amount": payload.amount,
+                "category": payload.category,
+                "spent_at": payload.spent_at.isoformat(),
+                "comment": payload.comment,
+            },
+        )
+        expense_data = data["expense"]
+        daily_data = data["daily"]
+        return ExpenseCreateOut(
+            expense=ExpenseOut(
+                id=expense_data["id"],
+                tg_user_id=expense_data["tg_user_id"],
+                amount=expense_data["amount"],
+                category=expense_data["category"],
+                spent_at=datetime.fromisoformat(expense_data["spent_at"]),
+                comment=expense_data["comment"],
+                created_at=datetime.fromisoformat(expense_data["created_at"]),
+            ),
+            spender_name=data["spender_name"],
+            daily=DailyLimitStatusOut(
+                date=daily_data["date"],
+                timezone=daily_data["timezone"],
+                daily_limit=daily_data["daily_limit"],
+                spent=daily_data["spent"],
+                remaining=daily_data["remaining"],
+                exceeded=daily_data["exceeded"],
+                exceeded_by=daily_data["exceeded_by"],
+            ),
+        )
+
+    async def get_budget_summary(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        user_id: int,
+    ) -> BudgetSummaryOut:
+        data = await self._json_request(
+            session,
+            "GET",
+            "/budget/summary",
+            params={"user_id": str(user_id)},
+        )
+        daily_data = data["daily"]
+        return BudgetSummaryOut(
+            total_income=data["total_income"],
+            total_expense=data["total_expense"],
+            balance=data["balance"],
+            contributors=[
+                BudgetContributorStats(
+                    tg_user_id=item["tg_user_id"],
+                    name=item["name"],
+                    amount=item["amount"],
+                )
+                for item in data["contributors"]
+            ],
+            spenders=[
+                BudgetSpenderStats(
+                    tg_user_id=item["tg_user_id"],
+                    name=item["name"],
+                    amount=item["amount"],
+                )
+                for item in data["spenders"]
+            ],
+            categories=[
+                BudgetCategoryStats(
+                    category=item["category"],
+                    amount=item["amount"],
+                )
+                for item in data["categories"]
+            ],
+            daily=DailyLimitStatusOut(
+                date=daily_data["date"],
+                timezone=daily_data["timezone"],
+                daily_limit=daily_data["daily_limit"],
+                spent=daily_data["spent"],
+                remaining=daily_data["remaining"],
+                exceeded=daily_data["exceeded"],
+                exceeded_by=daily_data["exceeded_by"],
+            ),
+        )
+
+    async def list_expenses(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        user_id: int | None = None,
+        limit: int = 20,
+    ) -> list[ExpenseOut]:
+        params = {"limit": str(limit)}
+        if user_id is not None:
+            params["user_id"] = str(user_id)
+        data = await self._json_request(
+            session,
+            "GET",
+            "/budget/expenses",
+            params=params,
+        )
+        return [
+            ExpenseOut(
+                id=item["id"],
+                tg_user_id=item["tg_user_id"],
+                amount=item["amount"],
+                category=item["category"],
+                spent_at=datetime.fromisoformat(item["spent_at"]),
+                comment=item["comment"],
+                created_at=datetime.fromisoformat(item["created_at"]),
+            )
+            for item in data
+        ]
+
+    async def get_daily_limit(
+        self, session: aiohttp.ClientSession
+    ) -> BudgetDailyLimitOut:
+        data = await self._json_request(session, "GET", "/budget/daily-limit")
+        updated_at_raw = data.get("updated_at")
+        return BudgetDailyLimitOut(
+            daily_limit=data["daily_limit"],
+            updated_by_tg_user_id=data["updated_by_tg_user_id"],
+            updated_at=(
+                datetime.fromisoformat(updated_at_raw) if updated_at_raw else None
+            ),
+        )
+
+    async def set_daily_limit(
+        self,
+        session: aiohttp.ClientSession,
+        payload: BudgetDailyLimitSet,
+    ) -> BudgetDailyLimitOut:
+        data = await self._json_request(
+            session,
+            "PUT",
+            "/budget/daily-limit",
+            json_payload={
+                "actor_tg_user_id": payload.actor_tg_user_id,
+                "daily_limit": payload.daily_limit,
+            },
+        )
+        updated_at_raw = data.get("updated_at")
+        return BudgetDailyLimitOut(
+            daily_limit=data["daily_limit"],
+            updated_by_tg_user_id=data["updated_by_tg_user_id"],
+            updated_at=(
+                datetime.fromisoformat(updated_at_raw) if updated_at_raw else None
+            ),
+        )
+
+    async def get_daily_status(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        user_id: int,
+    ) -> DailyLimitStatusOut:
+        data = await self._json_request(
+            session,
+            "GET",
+            "/budget/daily-status",
+            params={"user_id": str(user_id)},
+        )
+        return DailyLimitStatusOut(
+            date=data["date"],
+            timezone=data["timezone"],
+            daily_limit=data["daily_limit"],
+            spent=data["spent"],
+            remaining=data["remaining"],
+            exceeded=data["exceeded"],
+            exceeded_by=data["exceeded_by"],
         )
 
     async def get_user_timezone(

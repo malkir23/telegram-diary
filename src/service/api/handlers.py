@@ -8,27 +8,37 @@ from pydantic import ValidationError
 from ..db.lifecycle import session_scope
 from .repository import (
     claim_due_reminders,
+    create_budget_contribution,
     create_diary_entry,
     create_event,
+    create_expense,
     delete_diary_entry,
     delete_event,
+    get_budget_daily_limit,
+    get_budget_summary,
+    get_daily_limit_status,
     get_user_timezone,
     list_diary_entries_for_user,
     list_events_for_user,
+    list_expenses,
     mark_reminder_sent,
     resolve_users_by_labels,
+    set_budget_daily_limit,
     set_user_timezone,
     update_diary_entry,
     update_event,
     upsert_user,
 )
 from .schemas import (
+    BudgetContributionCreate,
+    BudgetDailyLimitSet,
     DiaryEntryCreate,
     DiaryEntryDelete,
     DiaryEntryUpdate,
     EventCreate,
     EventDelete,
     EventUpdate,
+    ExpenseCreate,
     UserTimezoneSet,
     UserUpsert,
 )
@@ -232,6 +242,103 @@ async def mark_reminder_sent_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "updated": updated}, status=200)
 
 
+async def create_budget_contribution_handler(request: web.Request) -> web.Response:
+    try:
+        payload = BudgetContributionCreate.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            created = await create_budget_contribution(session, payload)
+        except ValueError as exc:
+            return web.json_response({"detail": str(exc)}, status=422)
+    return web.json_response(created.model_dump(mode="json"), status=201)
+
+
+async def create_expense_handler(request: web.Request) -> web.Response:
+    try:
+        payload = ExpenseCreate.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            created = await create_expense(session, payload)
+        except ValueError as exc:
+            return web.json_response({"detail": str(exc)}, status=422)
+    return web.json_response(created.model_dump(mode="json"), status=201)
+
+
+async def budget_summary_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.query.get("user_id", "")
+    if not user_id_raw.isdigit():
+        return web.json_response(
+            {"detail": "user_id is required and must be integer"}, status=400
+        )
+    user_id = int(user_id_raw)
+
+    async with session_scope() as session:
+        summary = await get_budget_summary(session, user_id=user_id)
+    return web.json_response(summary.model_dump(mode="json"), status=200)
+
+
+async def list_expenses_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.query.get("user_id")
+    if user_id_raw is not None and not user_id_raw.isdigit():
+        return web.json_response(
+            {"detail": "user_id must be integer when provided"}, status=400
+        )
+
+    limit_raw = request.query.get("limit", "20")
+    if not limit_raw.isdigit():
+        return web.json_response({"detail": "limit must be integer"}, status=400)
+    limit = int(limit_raw)
+
+    async with session_scope() as session:
+        expenses = await list_expenses(
+            session,
+            user_id=int(user_id_raw) if user_id_raw is not None else None,
+            limit=limit,
+        )
+    return web.json_response(
+        [item.model_dump(mode="json") for item in expenses], status=200
+    )
+
+
+async def get_budget_daily_limit_handler(_: web.Request) -> web.Response:
+    async with session_scope() as session:
+        result = await get_budget_daily_limit(session)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
+async def set_budget_daily_limit_handler(request: web.Request) -> web.Response:
+    try:
+        payload = BudgetDailyLimitSet.model_validate(await _parse_json(request))
+    except (ValueError, ValidationError) as exc:
+        return web.json_response({"detail": str(exc)}, status=422)
+
+    async with session_scope() as session:
+        try:
+            result = await set_budget_daily_limit(session, payload)
+        except ValueError as exc:
+            return web.json_response({"detail": str(exc)}, status=422)
+    return web.json_response(result.model_dump(mode="json"), status=200)
+
+
+async def budget_daily_status_handler(request: web.Request) -> web.Response:
+    user_id_raw = request.query.get("user_id", "")
+    if not user_id_raw.isdigit():
+        return web.json_response(
+            {"detail": "user_id is required and must be integer"}, status=400
+        )
+    user_id = int(user_id_raw)
+
+    async with session_scope() as session:
+        status = await get_daily_limit_status(session, user_id=user_id)
+    return web.json_response(status.model_dump(mode="json"), status=200)
+
+
 async def get_user_timezone_handler(request: web.Request) -> web.Response:
     user_id_raw = request.match_info.get("user_id", "0")
     if not user_id_raw.isdigit():
@@ -302,6 +409,13 @@ def setup_routes(app: web.Application) -> None:
     app.router.add_get("/events", list_events_handler)
     app.router.add_post("/events/reminders/claim", claim_reminders_handler)
     app.router.add_post("/events/{event_id}/reminder-sent", mark_reminder_sent_handler)
+    app.router.add_post("/budget/contributions", create_budget_contribution_handler)
+    app.router.add_post("/budget/expenses", create_expense_handler)
+    app.router.add_get("/budget/summary", budget_summary_handler)
+    app.router.add_get("/budget/expenses", list_expenses_handler)
+    app.router.add_get("/budget/daily-limit", get_budget_daily_limit_handler)
+    app.router.add_put("/budget/daily-limit", set_budget_daily_limit_handler)
+    app.router.add_get("/budget/daily-status", budget_daily_status_handler)
     app.router.add_get("/users/{user_id}/timezone", get_user_timezone_handler)
     app.router.add_put("/users/{user_id}/timezone", set_user_timezone_handler)
     app.router.add_put("/users/{user_id}", upsert_user_handler)

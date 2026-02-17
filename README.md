@@ -52,6 +52,13 @@ uv run python main.py
 - `GET /events?user_id=<tg_user_id>`
 - `POST /events/reminders/claim`
 - `POST /events/{event_id}/reminder-sent`
+- `POST /budget/contributions`
+- `POST /budget/expenses`
+- `GET /budget/summary?user_id=<tg_user_id>`
+- `GET /budget/expenses?user_id=<tg_user_id>&limit=<n>`
+- `GET /budget/daily-limit`
+- `PUT /budget/daily-limit`
+- `GET /budget/daily-status?user_id=<tg_user_id>`
 - `GET /users/{user_id}/timezone`
 - `PUT /users/{user_id}/timezone`
 - `PUT /users/{user_id}`
@@ -91,12 +98,28 @@ Service endpoint is fixed in code for local orchestration:
 - `/delete_event <id>`
 - `/events`
 - `/events_today`
+- `/add_income <amount> | <comment>`
+- `/add_expense <amount> | <what> | <when>`
+- `/set_daily_limit <amount>` (`0` disables limit)
+- `/daily_limit`
+- `/budget`
+- `/expenses [limit]`
 - `/set_timezone <IANA timezone>`
 - `/timezone`
 
 Time format: `YYYY-MM-DD HH:MM` in your configured timezone.
 Participants: comma-separated tags/names (for example: `@alice,bob smith`), or `-`.
 Bot resolves participants to Telegram IDs via `users` table.
+
+Budget logic:
+- Budget = sum of all income contributions (`/add_income`)
+- Expenses are tracked with who/amount/when/what (`/add_expense`)
+- You can set global daily spending limit (`/set_daily_limit`)
+- If daily spending limit is exceeded after expense creation, bot warns user and
+  shows who spent on what.
+- `/budget` shows total budget, total spent, balance, who contributed how much,
+  who spent how much, expense categories, and current daily limit status
+  (spent/remaining/exceeded).
 
 `start_at` and `end_at` are converted to UTC before storing in database.
 When events are shown back to user, time is converted from UTC to user's timezone.

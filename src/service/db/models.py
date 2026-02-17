@@ -84,3 +84,52 @@ class UserSetting(Base):
 
     tg_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     timezone: Mapped[str] = mapped_column(Text, default="UTC", server_default="UTC")
+
+
+class BudgetContribution(Base):
+    __tablename__ = "budget_contributions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tg_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.tg_user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    amount: Mapped[int] = mapped_column(Integer)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class Expense(Base):
+    __tablename__ = "expenses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tg_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.tg_user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    amount: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str] = mapped_column(Text)
+    spent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class BudgetSetting(Base):
+    __tablename__ = "budget_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by_tg_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.tg_user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

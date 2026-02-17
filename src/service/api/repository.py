@@ -7,9 +7,27 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..db.models import DiaryEntry, Event, EventParticipant, User, UserSetting
+from ..db.models import (
+    BudgetContribution,
+    BudgetSetting,
+    DiaryEntry,
+    Event,
+    EventParticipant,
+    Expense,
+    User,
+    UserSetting,
+)
 from .schemas import (
+    BudgetCategoryStats,
+    BudgetContributionCreate,
+    BudgetContributionOut,
+    BudgetContributorStats,
+    BudgetDailyLimitOut,
+    BudgetDailyLimitSet,
+    BudgetSpenderStats,
+    BudgetSummaryOut,
     ConflictItem,
+    DailyLimitStatusOut,
     DiaryEntryCreate,
     DiaryEntryDelete,
     DiaryEntryOut,
@@ -18,6 +36,9 @@ from .schemas import (
     EventDelete,
     EventOut,
     EventUpdate,
+    ExpenseCreate,
+    ExpenseCreateOut,
+    ExpenseOut,
     ReminderOut,
     UserOut,
     UserResolveOut,
@@ -36,6 +57,30 @@ def _diary_entry_to_out(entry: DiaryEntry) -> DiaryEntryOut:
         message_id=entry.message_id,
         text=entry.text,
         created_at=entry.created_at,
+    )
+
+
+def _budget_contribution_to_out(
+    contribution: BudgetContribution,
+) -> BudgetContributionOut:
+    return BudgetContributionOut(
+        id=contribution.id,
+        tg_user_id=contribution.tg_user_id,
+        amount=contribution.amount,
+        comment=contribution.comment,
+        created_at=contribution.created_at,
+    )
+
+
+def _expense_to_out(expense: Expense) -> ExpenseOut:
+    return ExpenseOut(
+        id=expense.id,
+        tg_user_id=expense.tg_user_id,
+        amount=expense.amount,
+        category=expense.category,
+        spent_at=expense.spent_at,
+        comment=expense.comment,
+        created_at=expense.created_at,
     )
 
 
@@ -376,6 +421,292 @@ async def mark_reminder_sent(session: AsyncSession, event_id: int) -> bool:
     )
     await session.commit()
     return (updated.rowcount or 0) > 0
+
+
+BUDGET_SETTINGS_ID = 1
+
+
+async def _user_exists(session: AsyncSession, user_id: int) -> bool:
+    return (
+        await session.execute(select(User.tg_user_id).where(User.tg_user_id == user_id))
+    ).scalar_one_or_none() is not None
+
+
+async def _get_user_name(session: AsyncSession, user_id: int) -> str | None:
+    return (
+        await session.execute(select(User.name).where(User.tg_user_id == user_id))
+    ).scalar_one_or_none()
+
+
+async def _get_user_timezone_name(session: AsyncSession, user_id: int) -> str:
+    timezone = (
+        await session.execute(
+            select(UserSetting.timezone).where(UserSetting.tg_user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if timezone is None:
+        return "UTC"
+    return timezone
+
+
+def _day_bounds_utc(
+    anchor_utc: datetime, timezone: str
+) -> tuple[datetime, datetime, str]:
+    anchor_utc = _ensure_timezone(anchor_utc)
+    try:
+        user_zone = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        user_zone = ZoneInfo("UTC")
+        timezone = "UTC"
+
+    local_time = anchor_utc.astimezone(user_zone)
+    day_start_local = datetime(
+        local_time.year,
+        local_time.month,
+        local_time.day,
+        tzinfo=user_zone,
+    )
+    day_end_local = day_start_local + timedelta(days=1)
+    return (
+        day_start_local.astimezone(UTC),
+        day_end_local.astimezone(UTC),
+        day_start_local.date().isoformat(),
+    )
+
+
+async def get_budget_daily_limit(session: AsyncSession) -> BudgetDailyLimitOut:
+    setting = (
+        await session.execute(
+            select(BudgetSetting).where(BudgetSetting.id == BUDGET_SETTINGS_ID)
+        )
+    ).scalar_one_or_none()
+    if setting is None:
+        return BudgetDailyLimitOut(
+            daily_limit=None,
+            updated_by_tg_user_id=None,
+            updated_at=None,
+        )
+    return BudgetDailyLimitOut(
+        daily_limit=setting.daily_limit,
+        updated_by_tg_user_id=setting.updated_by_tg_user_id,
+        updated_at=setting.updated_at,
+    )
+
+
+async def set_budget_daily_limit(
+    session: AsyncSession, payload: BudgetDailyLimitSet
+) -> BudgetDailyLimitOut:
+    if not await _user_exists(session, payload.actor_tg_user_id):
+        raise ValueError("user is not registered")
+
+    setting = (
+        await session.execute(
+            select(BudgetSetting).where(BudgetSetting.id == BUDGET_SETTINGS_ID)
+        )
+    ).scalar_one_or_none()
+    new_limit = payload.daily_limit if payload.daily_limit > 0 else None
+    if setting is None:
+        setting = BudgetSetting(
+            id=BUDGET_SETTINGS_ID,
+            daily_limit=new_limit,
+            updated_by_tg_user_id=payload.actor_tg_user_id,
+        )
+        session.add(setting)
+    else:
+        setting.daily_limit = new_limit
+        setting.updated_by_tg_user_id = payload.actor_tg_user_id
+    await session.commit()
+    await session.refresh(setting)
+    return BudgetDailyLimitOut(
+        daily_limit=setting.daily_limit,
+        updated_by_tg_user_id=setting.updated_by_tg_user_id,
+        updated_at=setting.updated_at,
+    )
+
+
+async def get_daily_limit_status(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    at: datetime | None = None,
+) -> DailyLimitStatusOut:
+    anchor = _ensure_timezone(at or datetime.now(UTC))
+    timezone = await _get_user_timezone_name(session, user_id)
+    day_start_utc, day_end_utc, day_label = _day_bounds_utc(anchor, timezone)
+    spent_raw = (
+        await session.execute(
+            select(func.coalesce(func.sum(Expense.amount), 0)).where(
+                Expense.spent_at >= day_start_utc,
+                Expense.spent_at < day_end_utc,
+            )
+        )
+    ).scalar_one()
+    spent = int(spent_raw or 0)
+
+    setting = (
+        await session.execute(
+            select(BudgetSetting).where(BudgetSetting.id == BUDGET_SETTINGS_ID)
+        )
+    ).scalar_one_or_none()
+    daily_limit = setting.daily_limit if setting is not None else None
+    if daily_limit is None:
+        return DailyLimitStatusOut(
+            date=day_label,
+            timezone=timezone,
+            daily_limit=None,
+            spent=spent,
+            remaining=None,
+            exceeded=False,
+            exceeded_by=0,
+        )
+
+    remaining = daily_limit - spent
+    exceeded_by = max(0, spent - daily_limit)
+    return DailyLimitStatusOut(
+        date=day_label,
+        timezone=timezone,
+        daily_limit=daily_limit,
+        spent=spent,
+        remaining=max(0, remaining),
+        exceeded=spent > daily_limit,
+        exceeded_by=exceeded_by,
+    )
+
+
+async def create_budget_contribution(
+    session: AsyncSession, payload: BudgetContributionCreate
+) -> BudgetContributionOut:
+    if not await _user_exists(session, payload.tg_user_id):
+        raise ValueError("user is not registered")
+
+    comment = payload.comment.strip() if payload.comment else None
+    contribution = BudgetContribution(
+        tg_user_id=payload.tg_user_id,
+        amount=payload.amount,
+        comment=comment or None,
+    )
+    session.add(contribution)
+    await session.commit()
+    await session.refresh(contribution)
+    return _budget_contribution_to_out(contribution)
+
+
+async def create_expense(
+    session: AsyncSession, payload: ExpenseCreate
+) -> ExpenseCreateOut:
+    if not await _user_exists(session, payload.tg_user_id):
+        raise ValueError("user is not registered")
+
+    category = payload.category.strip()
+    if not category:
+        raise ValueError("category cannot be empty")
+    comment = payload.comment.strip() if payload.comment else None
+    expense = Expense(
+        tg_user_id=payload.tg_user_id,
+        amount=payload.amount,
+        category=category,
+        spent_at=_ensure_timezone(payload.spent_at),
+        comment=comment or None,
+    )
+    session.add(expense)
+    await session.commit()
+    await session.refresh(expense)
+    spender_name = await _get_user_name(session, payload.tg_user_id)
+    daily = await get_daily_limit_status(
+        session,
+        user_id=payload.tg_user_id,
+        at=expense.spent_at,
+    )
+    return ExpenseCreateOut(
+        expense=_expense_to_out(expense),
+        spender_name=spender_name,
+        daily=daily,
+    )
+
+
+async def list_expenses(
+    session: AsyncSession,
+    *,
+    user_id: int | None = None,
+    limit: int = 20,
+) -> list[ExpenseOut]:
+    query = select(Expense)
+    if user_id is not None:
+        query = query.where(Expense.tg_user_id == user_id)
+    query = query.order_by(Expense.spent_at.desc(), Expense.id.desc()).limit(
+        max(1, min(limit, 100))
+    )
+    rows = (await session.execute(query)).scalars()
+    return [_expense_to_out(item) for item in rows]
+
+
+async def get_budget_summary(
+    session: AsyncSession, *, user_id: int
+) -> BudgetSummaryOut:
+    total_income_raw = (
+        await session.execute(
+            select(func.coalesce(func.sum(BudgetContribution.amount), 0))
+        )
+    ).scalar_one()
+    total_expense_raw = (
+        await session.execute(select(func.coalesce(func.sum(Expense.amount), 0)))
+    ).scalar_one()
+
+    contributors_rows = await session.execute(
+        select(
+            BudgetContribution.tg_user_id,
+            func.max(User.name),
+            func.sum(BudgetContribution.amount),
+        )
+        .join(User, User.tg_user_id == BudgetContribution.tg_user_id)
+        .group_by(BudgetContribution.tg_user_id)
+        .order_by(func.sum(BudgetContribution.amount).desc())
+    )
+    spenders_rows = await session.execute(
+        select(
+            Expense.tg_user_id,
+            func.max(User.name),
+            func.sum(Expense.amount),
+        )
+        .join(User, User.tg_user_id == Expense.tg_user_id)
+        .group_by(Expense.tg_user_id)
+        .order_by(func.sum(Expense.amount).desc())
+    )
+    categories_rows = await session.execute(
+        select(Expense.category, func.sum(Expense.amount))
+        .group_by(Expense.category)
+        .order_by(func.sum(Expense.amount).desc())
+    )
+
+    total_income = int(total_income_raw or 0)
+    total_expense = int(total_expense_raw or 0)
+    daily_status = await get_daily_limit_status(session, user_id=user_id)
+    return BudgetSummaryOut(
+        total_income=total_income,
+        total_expense=total_expense,
+        balance=total_income - total_expense,
+        contributors=[
+            BudgetContributorStats(
+                tg_user_id=int(tg_user_id),
+                name=name,
+                amount=int(amount or 0),
+            )
+            for tg_user_id, name, amount in contributors_rows.all()
+        ],
+        spenders=[
+            BudgetSpenderStats(
+                tg_user_id=int(tg_user_id),
+                name=name,
+                amount=int(amount or 0),
+            )
+            for tg_user_id, name, amount in spenders_rows.all()
+        ],
+        categories=[
+            BudgetCategoryStats(category=category, amount=int(amount or 0))
+            for category, amount in categories_rows.all()
+        ],
+        daily=daily_status,
+    )
 
 
 def _validate_timezone(timezone: str) -> str:

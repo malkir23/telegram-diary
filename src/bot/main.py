@@ -14,12 +14,15 @@ from aiogram.types import Message
 from .client import DiaryServiceClient, ServiceConflictError
 from .config import settings
 from .schemas import (
+    BudgetContributionCreate,
+    BudgetDailyLimitSet,
     DiaryEntryCreate,
     DiaryEntryDelete,
     DiaryEntryUpdate,
     EventCreate,
     EventDelete,
     EventUpdate,
+    ExpenseCreate,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +41,12 @@ HELP_TEXT = (
     "/delete_event <id>\n"
     "/events\n\n"
     "/events_today\n\n"
+    "/add_income <amount> | <comment>\n"
+    "/add_expense <amount> | <what> | <when>\n"
+    "/set_daily_limit <amount>   (0 to disable)\n"
+    "/daily_limit\n"
+    "/budget\n"
+    "/expenses [limit]\n\n"
     "Time format: YYYY-MM-DD HH:MM (in your timezone)\n"
     "Participants: comma-separated tags/names or '-'"
 )
@@ -102,6 +111,20 @@ def _parse_participants(raw: str) -> list[str]:
     return sorted(set(result))
 
 
+def _parse_amount(raw: str) -> int:
+    value = raw.strip().replace(" ", "")
+    if not value.isdigit():
+        raise ValueError("amount must be positive integer")
+    amount = int(value)
+    if amount <= 0:
+        raise ValueError("amount must be positive integer")
+    return amount
+
+
+def _display_user(name: str | None, tg_user_id: int) -> str:
+    return f"{name} (id={tg_user_id})" if name else f"id={tg_user_id}"
+
+
 def _to_user_tz(dt: datetime, timezone: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
@@ -133,7 +156,7 @@ async def _get_user_timezone(user_id: int) -> str:
 async def start_handler(message: Message) -> None:
     await _register_user_aliases(message)
     await message.answer(
-        "Send plain text to store diary entry.\nUse /help to manage events."
+        "Send plain text to store diary entry.\nUse /help to manage events and budget."
     )
 
 
@@ -479,6 +502,305 @@ async def list_events_today_handler(message: Message) -> None:
     await message.answer("\n\n".join(lines))
 
 
+async def add_income_handler(message: Message) -> None:
+    if message.text is None or message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = message.text.replace("/add_income", "", 1).strip()
+    if not raw:
+        await message.answer("Usage: /add_income <amount> | <comment>")
+        return
+
+    try:
+        if "|" in raw:
+            amount_raw, comment_raw = [
+                part.strip() for part in raw.split("|", maxsplit=1)
+            ]
+            comment = comment_raw or None
+        else:
+            amount_raw = raw
+            comment = None
+        amount = _parse_amount(amount_raw)
+    except Exception:
+        await message.answer("Usage: /add_income <amount> | <comment>")
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            created = await _service_client().add_budget_contribution(
+                session,
+                BudgetContributionCreate(
+                    tg_user_id=message.from_user.id,
+                    amount=amount,
+                    comment=comment,
+                ),
+            )
+        await message.answer(
+            f"Income added: +{created.amount}. Contribution #{created.id} saved."
+        )
+    except Exception as exc:
+        logger.exception("Failed to add income")
+        await message.answer(f"Failed to add income: {exc}")
+
+
+async def add_expense_handler(message: Message) -> None:
+    if message.text is None or message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = message.text.replace("/add_expense", "", 1).strip()
+    if not raw:
+        await message.answer("Usage: /add_expense <amount> | <what> | <when>")
+        return
+
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        amount_raw, category_raw, spent_at_raw = [
+            part.strip() for part in raw.split("|", maxsplit=2)
+        ]
+        amount = _parse_amount(amount_raw)
+        category = category_raw.strip()
+        if not category:
+            raise ValueError("empty category")
+        spent_at = _parse_local_datetime(spent_at_raw, timezone)
+    except Exception:
+        await message.answer(
+            "Usage: /add_expense <amount> | <what> | <when>\n"
+            "Time format: YYYY-MM-DD HH:MM"
+        )
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            created = await _service_client().add_expense(
+                session,
+                ExpenseCreate(
+                    tg_user_id=message.from_user.id,
+                    amount=amount,
+                    category=category,
+                    spent_at=spent_at,
+                    comment=None,
+                ),
+            )
+        expense = created.expense
+        daily = created.daily
+        spent_local = _to_user_tz(expense.spent_at, timezone)
+        who = _display_user(created.spender_name, expense.tg_user_id)
+        lines = [
+            "Expense added:",
+            f"Who: {who}",
+            f"What: {expense.category}",
+            f"Amount: {expense.amount}",
+            f"When: {spent_local:%Y-%m-%d %H:%M} ({timezone})",
+            f"Expense #{expense.id}",
+        ]
+        if daily.daily_limit is None:
+            lines.append("Daily limit: not set")
+        else:
+            lines.append(
+                f"Daily spent: {daily.spent} / {daily.daily_limit} ({daily.date})"
+            )
+            lines.append(f"Daily remaining: {daily.remaining}")
+            if daily.exceeded:
+                lines.append(f"WARNING: daily limit exceeded by {daily.exceeded_by}.")
+        await message.answer("\n".join(lines))
+    except Exception as exc:
+        logger.exception("Failed to add expense")
+        await message.answer(f"Failed to add expense: {exc}")
+
+
+async def set_daily_limit_handler(message: Message) -> None:
+    if message.text is None or message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = message.text.replace("/set_daily_limit", "", 1).strip()
+    if not raw or not raw.isdigit():
+        await message.answer("Usage: /set_daily_limit <amount> (0 to disable)")
+        return
+    daily_limit = int(raw)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = await _service_client().set_daily_limit(
+                session,
+                BudgetDailyLimitSet(
+                    actor_tg_user_id=message.from_user.id,
+                    daily_limit=daily_limit,
+                ),
+            )
+        if result.daily_limit is None:
+            await message.answer("Daily limit disabled.")
+        else:
+            await message.answer(f"Daily limit set: {result.daily_limit}")
+    except Exception as exc:
+        logger.exception("Failed to set daily limit")
+        await message.answer(f"Failed to set daily limit: {exc}")
+
+
+async def daily_limit_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        async with aiohttp.ClientSession() as session:
+            setting = await _service_client().get_daily_limit(session)
+            status = await _service_client().get_daily_status(
+                session, user_id=message.from_user.id
+            )
+    except Exception as exc:
+        logger.exception("Failed to get daily limit status")
+        await message.answer(f"Failed to get daily limit status: {exc}")
+        return
+
+    if setting.daily_limit is None:
+        await message.answer(
+            f"Daily limit is not set.\n"
+            f"Spent today ({status.date}, {status.timezone}): {status.spent}"
+        )
+        return
+
+    lines = [
+        f"Daily limit ({status.date}, {status.timezone}): {setting.daily_limit}",
+        f"Spent today: {status.spent}",
+        f"Remaining today: {status.remaining}",
+    ]
+    if status.exceeded:
+        lines.append(f"Exceeded by: {status.exceeded_by}")
+    await message.answer("\n".join(lines))
+
+
+async def budget_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        async with aiohttp.ClientSession() as session:
+            summary = await _service_client().get_budget_summary(
+                session, user_id=message.from_user.id
+            )
+            expenses = await _service_client().list_expenses(session, limit=10)
+    except Exception as exc:
+        logger.exception("Failed to build budget report")
+        await message.answer(f"Failed to build budget report: {exc}")
+        return
+
+    names_by_user: dict[int, str | None] = {}
+    for item in summary.contributors:
+        names_by_user[item.tg_user_id] = item.name
+    for item in summary.spenders:
+        names_by_user[item.tg_user_id] = item.name
+
+    lines = [
+        "Budget summary:",
+        f"Budget (all incomes): {summary.total_income}",
+        f"Spent: {summary.total_expense}",
+        f"Balance: {summary.balance}",
+        "",
+        f"Daily status ({summary.daily.date}, {summary.daily.timezone}):",
+    ]
+    if summary.daily.daily_limit is None:
+        lines.append(f"Spent today: {summary.daily.spent}")
+        lines.append("Daily limit: not set")
+    else:
+        lines.append(
+            f"Spent today: {summary.daily.spent} / {summary.daily.daily_limit}"
+        )
+        lines.append(f"Remaining today: {summary.daily.remaining}")
+        if summary.daily.exceeded:
+            lines.append(f"Exceeded by: {summary.daily.exceeded_by}")
+
+    lines.extend(
+        [
+            "",
+            "Who contributed:",
+        ]
+    )
+    if summary.contributors:
+        for item in summary.contributors[:15]:
+            lines.append(
+                f"- {_display_user(item.name, item.tg_user_id)}: +{item.amount}"
+            )
+    else:
+        lines.append("- no contributions yet")
+
+    lines.append("")
+    lines.append("Who spent:")
+    if summary.spenders:
+        for item in summary.spenders[:15]:
+            lines.append(
+                f"- {_display_user(item.name, item.tg_user_id)}: -{item.amount}"
+            )
+    else:
+        lines.append("- no expenses yet")
+
+    lines.append("")
+    lines.append("Spent on what:")
+    if summary.categories:
+        for item in summary.categories[:15]:
+            lines.append(f"- {item.category}: {item.amount}")
+    else:
+        lines.append("- no expense categories yet")
+
+    lines.append("")
+    lines.append(f"Recent expenses (timezone: {timezone}):")
+    if expenses:
+        for item in expenses[:10]:
+            spent_local = _to_user_tz(item.spent_at, timezone)
+            display_name = _display_user(
+                names_by_user.get(item.tg_user_id), item.tg_user_id
+            )
+            lines.append(
+                f"- {spent_local:%Y-%m-%d %H:%M}: {display_name} spent "
+                f"{item.amount} on {item.category}"
+            )
+    else:
+        lines.append("- no expenses yet")
+
+    await message.answer("\n".join(lines))
+
+
+async def expenses_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = (message.text or "").replace("/expenses", "", 1).strip()
+    limit = 20
+    if raw:
+        if not raw.isdigit():
+            await message.answer("Usage: /expenses [limit]")
+            return
+        limit = int(raw)
+
+    try:
+        timezone = await _get_user_timezone(message.from_user.id)
+        async with aiohttp.ClientSession() as session:
+            expenses = await _service_client().list_expenses(session, limit=limit)
+            summary = await _service_client().get_budget_summary(
+                session, user_id=message.from_user.id
+            )
+    except Exception as exc:
+        logger.exception("Failed to list expenses")
+        await message.answer(f"Failed to list expenses: {exc}")
+        return
+
+    if not expenses:
+        await message.answer("No expenses found.")
+        return
+
+    names_by_user: dict[int, str | None] = {
+        item.tg_user_id: item.name for item in summary.spenders
+    }
+    lines = [f"Latest expenses (timezone: {timezone}):"]
+    for item in expenses[:limit]:
+        spent_local = _to_user_tz(item.spent_at, timezone)
+        lines.append(
+            f"- #{item.id} {spent_local:%Y-%m-%d %H:%M} | "
+            f"{_display_user(names_by_user.get(item.tg_user_id), item.tg_user_id)} | "
+            f"{item.amount} | {item.category}"
+        )
+    await message.answer("\n".join(lines))
+
+
 async def text_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
@@ -562,6 +884,12 @@ async def run() -> None:
     dp.message.register(delete_event_handler, Command("delete_event"))
     dp.message.register(list_events_handler, Command("events"))
     dp.message.register(list_events_today_handler, Command("events_today"))
+    dp.message.register(add_income_handler, Command("add_income"))
+    dp.message.register(add_expense_handler, Command("add_expense"))
+    dp.message.register(set_daily_limit_handler, Command("set_daily_limit"))
+    dp.message.register(daily_limit_handler, Command("daily_limit"))
+    dp.message.register(budget_handler, Command("budget"))
+    dp.message.register(expenses_handler, Command("expenses"))
     dp.message.register(text_handler, F.text & ~F.text.startswith("/"))
 
     reminder_task = asyncio.create_task(reminders_loop(bot), name="reminders-loop")
