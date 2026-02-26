@@ -9,7 +9,14 @@ import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 from .client import DiaryServiceClient, ServiceConflictError
 from .config import settings
@@ -54,17 +61,130 @@ HELP_TEXT = (
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/diary"), KeyboardButton(text="/events")],
-        [KeyboardButton(text="/events_today"), KeyboardButton(text="/timezone")],
-        [KeyboardButton(text="/budget"), KeyboardButton(text="/daily_limit")],
         [KeyboardButton(text="/expenses"), KeyboardButton(text="/help")],
     ],
     resize_keyboard=True,
     is_persistent=True,
 )
 
+BTN_BACK = "⬅️ Назад"
+
+BTN_DIARY_LIST = "📄 Мої записи"
+BTN_DIARY_EDIT = "✏️ Редагувати запис"
+BTN_DIARY_DELETE = "🗑 Видалити запис"
+
+BTN_EVENTS_LIST = "📅 Список подій"
+BTN_EVENTS_TODAY = "📆 Події сьогодні"
+BTN_EVENTS_CREATE = "➕ Створити подію"
+BTN_EVENTS_UPDATE = "✏️ Оновити подію"
+BTN_EVENTS_DELETE = "🗑 Видалити подію"
+BTN_EVENTS_TIMEZONE = "🕒 Мій часовий пояс"
+BTN_EVENTS_SET_TIMEZONE = "⚙️ Змінити часовий пояс"
+
+BTN_EXPENSES_LIST = "📄 Останні витрати"
+BTN_EXPENSES_ADD = "➖ Додати витрату"
+BTN_EXPENSES_INCOME = "➕ Додати дохід"
+BTN_EXPENSES_BUDGET = "💰 Бюджет"
+BTN_EXPENSES_DAILY = "📊 Денний ліміт"
+BTN_EXPENSES_SET_DAILY = "⚙️ Встановити денний ліміт"
+
+DIARY_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_DIARY_LIST)],
+        [KeyboardButton(text=BTN_DIARY_EDIT), KeyboardButton(text=BTN_DIARY_DELETE)],
+        [KeyboardButton(text=BTN_BACK)],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+EVENTS_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_EVENTS_LIST), KeyboardButton(text=BTN_EVENTS_TODAY)],
+        [KeyboardButton(text=BTN_EVENTS_CREATE)],
+        [
+            KeyboardButton(text=BTN_EVENTS_UPDATE),
+            KeyboardButton(text=BTN_EVENTS_DELETE),
+        ],
+        [
+            KeyboardButton(text=BTN_EVENTS_TIMEZONE),
+            KeyboardButton(text=BTN_EVENTS_SET_TIMEZONE),
+        ],
+        [KeyboardButton(text=BTN_BACK)],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+EXPENSES_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_EXPENSES_LIST)],
+        [
+            KeyboardButton(text=BTN_EXPENSES_ADD),
+            KeyboardButton(text=BTN_EXPENSES_INCOME),
+        ],
+        [KeyboardButton(text=BTN_EXPENSES_BUDGET)],
+        [
+            KeyboardButton(text=BTN_EXPENSES_DAILY),
+            KeyboardButton(text=BTN_EXPENSES_SET_DAILY),
+        ],
+        [KeyboardButton(text=BTN_BACK)],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+PENDING_ACTIONS: dict[int, dict[str, int | str]] = {}
+
 
 def _service_client() -> DiaryServiceClient:
     return DiaryServiceClient(base_url=settings.diary_service_url)
+
+
+def _clear_pending_action(user_id: int) -> None:
+    PENDING_ACTIONS.pop(user_id, None)
+
+
+def _set_pending_action(user_id: int, mode: str, item_id: int | None = None) -> None:
+    payload: dict[str, int | str] = {"mode": mode}
+    if item_id is not None:
+        payload["item_id"] = item_id
+    PENDING_ACTIONS[user_id] = payload
+
+
+def _short_text(value: str, limit: int = 28) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
+
+
+def _build_diary_selection_keyboard(entries: list, action: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in entries[:20]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"#{item.id} {_short_text(item.text)}",
+                    callback_data=f"diary:{action}:{item.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_events_selection_keyboard(events: list, action: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in events[:20]:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"#{item.id} {_short_text(item.title)}",
+                    callback_data=f"event:{action}:{item.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _normalize_participant_label(value: str) -> str:
@@ -175,6 +295,193 @@ async def start_handler(message: Message) -> None:
 async def help_handler(message: Message) -> None:
     await _register_user_aliases(message)
     await message.answer(HELP_TEXT, reply_markup=MAIN_KEYBOARD)
+
+
+async def open_main_menu_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _clear_pending_action(message.from_user.id)
+    await message.answer("Головне меню.", reply_markup=MAIN_KEYBOARD)
+
+
+async def open_diary_menu_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _clear_pending_action(message.from_user.id)
+    await _register_user_aliases(message)
+    await message.answer("Меню щоденника.", reply_markup=DIARY_KEYBOARD)
+
+
+async def open_events_menu_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _clear_pending_action(message.from_user.id)
+    await _register_user_aliases(message)
+    await message.answer("Меню подій.", reply_markup=EVENTS_KEYBOARD)
+
+
+async def open_expenses_menu_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _clear_pending_action(message.from_user.id)
+    await _register_user_aliases(message)
+    await message.answer("Меню витрат.", reply_markup=EXPENSES_KEYBOARD)
+
+
+async def diary_edit_picker_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        async with aiohttp.ClientSession() as session:
+            entries = await _service_client().list_entries(
+                session, message.from_user.id
+            )
+    except Exception as exc:
+        logger.exception("Failed to list diary entries for edit picker")
+        await message.answer(f"Failed to load entries: {exc}")
+        return
+    if not entries:
+        await message.answer("Немає записів для редагування.")
+        return
+    await message.answer(
+        "Оберіть запис для редагування:",
+        reply_markup=_build_diary_selection_keyboard(entries, "edit"),
+    )
+
+
+async def diary_delete_picker_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        async with aiohttp.ClientSession() as session:
+            entries = await _service_client().list_entries(
+                session, message.from_user.id
+            )
+    except Exception as exc:
+        logger.exception("Failed to list diary entries for delete picker")
+        await message.answer(f"Failed to load entries: {exc}")
+        return
+    if not entries:
+        await message.answer("Немає записів для видалення.")
+        return
+    await message.answer(
+        "Оберіть запис для видалення:",
+        reply_markup=_build_diary_selection_keyboard(entries, "delete"),
+    )
+
+
+async def events_update_picker_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        async with aiohttp.ClientSession() as session:
+            events = await _service_client().list_events(session, message.from_user.id)
+    except Exception as exc:
+        logger.exception("Failed to list events for update picker")
+        await message.answer(f"Failed to load events: {exc}")
+        return
+    if not events:
+        await message.answer("Немає подій для оновлення.")
+        return
+    await message.answer(
+        "Оберіть подію для оновлення:",
+        reply_markup=_build_events_selection_keyboard(events, "update"),
+    )
+
+
+async def events_delete_picker_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    try:
+        async with aiohttp.ClientSession() as session:
+            events = await _service_client().list_events(session, message.from_user.id)
+    except Exception as exc:
+        logger.exception("Failed to list events for delete picker")
+        await message.answer(f"Failed to load events: {exc}")
+        return
+    if not events:
+        await message.answer("Немає подій для видалення.")
+        return
+    await message.answer(
+        "Оберіть подію для видалення:",
+        reply_markup=_build_events_selection_keyboard(events, "delete"),
+    )
+
+
+async def diary_callback_handler(callback: CallbackQuery) -> None:
+    if callback.data is None or callback.from_user is None or callback.message is None:
+        return
+    _, action, entry_id_raw = callback.data.split(":", maxsplit=2)
+    if not entry_id_raw.isdigit():
+        await callback.answer("Invalid entry id", show_alert=True)
+        return
+    entry_id = int(entry_id_raw)
+
+    if action == "edit":
+        _set_pending_action(callback.from_user.id, mode="diary_edit", item_id=entry_id)
+        await callback.message.answer(
+            f"Надішліть новий текст для запису #{entry_id}:",
+            reply_markup=DIARY_KEYBOARD,
+        )
+        await callback.answer()
+        return
+
+    if action == "delete":
+        try:
+            async with aiohttp.ClientSession() as session:
+                await _service_client().delete_entry(
+                    session,
+                    entry_id,
+                    DiaryEntryDelete(actor_tg_user_id=callback.from_user.id),
+                )
+            await callback.message.answer(f"Запис #{entry_id} видалено.")
+            await callback.answer("Видалено")
+        except Exception as exc:
+            logger.exception("Failed to delete diary entry via callback")
+            await callback.message.answer(f"Failed to delete diary entry: {exc}")
+            await callback.answer("Помилка", show_alert=True)
+
+
+async def event_callback_handler(callback: CallbackQuery) -> None:
+    if callback.data is None or callback.from_user is None or callback.message is None:
+        return
+    _, action, event_id_raw = callback.data.split(":", maxsplit=2)
+    if not event_id_raw.isdigit():
+        await callback.answer("Invalid event id", show_alert=True)
+        return
+    event_id = int(event_id_raw)
+
+    if action == "update":
+        _set_pending_action(
+            callback.from_user.id, mode="event_update", item_id=event_id
+        )
+        await callback.message.answer(
+            "Надішліть нові дані у форматі:\n"
+            "<title> | <start> | <end> | <participants>\n"
+            "Time format: YYYY-MM-DD HH:MM",
+            reply_markup=EVENTS_KEYBOARD,
+        )
+        await callback.answer()
+        return
+
+    if action == "delete":
+        try:
+            async with aiohttp.ClientSession() as session:
+                await _service_client().delete_event(
+                    session,
+                    event_id,
+                    EventDelete(actor_tg_user_id=callback.from_user.id),
+                )
+            await callback.message.answer(f"Подію #{event_id} видалено.")
+            await callback.answer("Видалено")
+        except Exception as exc:
+            logger.exception("Failed to delete event via callback")
+            await callback.message.answer(f"Failed to delete event: {exc}")
+            await callback.answer("Помилка", show_alert=True)
 
 
 async def timezone_handler(message: Message) -> None:
@@ -321,6 +628,9 @@ async def edit_diary_handler(message: Message) -> None:
         return
     await _register_user_aliases(message)
     raw = message.text.replace("/edit_diary", "", 1).strip()
+    if not raw:
+        await diary_edit_picker_handler(message)
+        return
     try:
         entry_id_raw, text = [part.strip() for part in raw.split("|", maxsplit=1)]
         if not entry_id_raw.isdigit():
@@ -352,6 +662,9 @@ async def delete_diary_handler(message: Message) -> None:
         return
     await _register_user_aliases(message)
     raw = message.text.replace("/delete_diary", "", 1).strip()
+    if not raw:
+        await diary_delete_picker_handler(message)
+        return
     if not raw.isdigit():
         await message.answer("Usage: /delete_diary <id>")
         return
@@ -375,6 +688,9 @@ async def update_event_handler(message: Message) -> None:
         return
     await _register_user_aliases(message)
     raw = message.text.replace("/update_event", "", 1).strip()
+    if not raw:
+        await events_update_picker_handler(message)
+        return
     try:
         timezone = await _get_user_timezone(message.from_user.id)
     except Exception as exc:
@@ -432,6 +748,9 @@ async def delete_event_handler(message: Message) -> None:
         return
     await _register_user_aliases(message)
     raw = message.text.replace("/delete_event", "", 1).strip()
+    if not raw:
+        await events_delete_picker_handler(message)
+        return
     if not raw.isdigit():
         await message.answer("Usage: /delete_event <id>")
         return
@@ -771,18 +1090,9 @@ async def budget_handler(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-async def expenses_handler(message: Message) -> None:
+async def _send_expenses(message: Message, limit: int) -> None:
     if message.from_user is None:
         return
-    await _register_user_aliases(message)
-    raw = (message.text or "").replace("/expenses", "", 1).strip()
-    limit = 20
-    if raw:
-        if not raw.isdigit():
-            await message.answer("Usage: /expenses [limit]")
-            return
-        limit = int(raw)
-
     try:
         timezone = await _get_user_timezone(message.from_user.id)
         async with aiohttp.ClientSession() as session:
@@ -813,10 +1123,311 @@ async def expenses_handler(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+async def expenses_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await _register_user_aliases(message)
+    raw = (message.text or "").replace("/expenses", "", 1).strip()
+    limit = 20
+    if raw:
+        if not raw.isdigit():
+            await message.answer("Usage: /expenses [limit]")
+            return
+        limit = int(raw)
+    await _send_expenses(message, limit)
+
+
+async def create_event_prepare_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _set_pending_action(message.from_user.id, mode="event_create")
+    await message.answer(
+        "Надішліть дані у форматі:\n"
+        "<title> | <start> | <end> | <participants>\n"
+        "Time format: YYYY-MM-DD HH:MM",
+        reply_markup=EVENTS_KEYBOARD,
+    )
+
+
+async def set_timezone_prepare_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _set_pending_action(message.from_user.id, mode="set_timezone")
+    await message.answer(
+        "Надішліть часовий пояс IANA, наприклад: Europe/Kyiv",
+        reply_markup=EVENTS_KEYBOARD,
+    )
+
+
+async def add_income_prepare_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _set_pending_action(message.from_user.id, mode="add_income")
+    await message.answer(
+        "Надішліть:\n<amount> | <comment>",
+        reply_markup=EXPENSES_KEYBOARD,
+    )
+
+
+async def add_expense_prepare_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _set_pending_action(message.from_user.id, mode="add_expense")
+    await message.answer(
+        "Надішліть:\n<amount> | <what> | <when>\nTime format: YYYY-MM-DD HH:MM",
+        reply_markup=EXPENSES_KEYBOARD,
+    )
+
+
+async def set_daily_limit_prepare_handler(message: Message) -> None:
+    if message.from_user is None:
+        return
+    _set_pending_action(message.from_user.id, mode="set_daily_limit")
+    await message.answer(
+        "Надішліть суму денного ліміту (0 щоб вимкнути).",
+        reply_markup=EXPENSES_KEYBOARD,
+    )
+
+
+async def expenses_list_button_handler(message: Message) -> None:
+    await _send_expenses(message, 20)
+
+
+async def _handle_pending_action(message: Message) -> bool:
+    if message.from_user is None or message.text is None:
+        return False
+    pending = PENDING_ACTIONS.get(message.from_user.id)
+    if pending is None:
+        return False
+
+    mode = str(pending.get("mode", ""))
+    raw = message.text.strip()
+    if not raw:
+        await message.answer("Порожнє повідомлення. Спробуйте ще раз.")
+        return True
+
+    if mode == "diary_edit":
+        item_id = int(pending.get("item_id", 0))
+        try:
+            async with aiohttp.ClientSession() as session:
+                updated = await _service_client().update_entry(
+                    session,
+                    item_id,
+                    DiaryEntryUpdate(actor_tg_user_id=message.from_user.id, text=raw),
+                )
+            _clear_pending_action(message.from_user.id)
+            await message.answer(
+                f"Запис #{updated.id} оновлено.\n"
+                f"[{updated.created_at:%Y-%m-%d %H:%M}] {updated.text}"
+            )
+        except Exception as exc:
+            logger.exception("Failed to update diary entry from pending action")
+            await message.answer(f"Failed to update diary entry: {exc}")
+        return True
+
+    if mode == "set_timezone":
+        try:
+            ZoneInfo(raw)
+        except ZoneInfoNotFoundError:
+            await message.answer("Невірний timezone. Приклад: Europe/Kyiv")
+            return True
+        try:
+            async with aiohttp.ClientSession() as session:
+                result = await _service_client().set_user_timezone(
+                    session, message.from_user.id, raw
+                )
+            _clear_pending_action(message.from_user.id)
+            await message.answer(f"Timezone updated: {result.timezone}")
+        except Exception as exc:
+            logger.exception("Failed to set timezone from pending action")
+            await message.answer(f"Failed to set timezone: {exc}")
+        return True
+
+    if mode == "event_create":
+        try:
+            timezone = await _get_user_timezone(message.from_user.id)
+            title, start_raw, end_raw, participants_raw = [
+                part.strip() for part in raw.split("|", maxsplit=3)
+            ]
+            participant_labels = _parse_participants(participants_raw)
+            payload = EventCreate(
+                creator_tg_user_id=message.from_user.id,
+                title=title,
+                start_at=_parse_local_datetime(start_raw, timezone),
+                end_at=_parse_local_datetime(end_raw, timezone),
+                participants=[],
+            )
+        except Exception:
+            await message.answer("Невірний формат. Спробуйте ще раз.")
+            return True
+        try:
+            async with aiohttp.ClientSession() as session:
+                resolved = await _service_client().resolve_users(
+                    session, participant_labels
+                )
+                if resolved.unresolved:
+                    await message.answer(
+                        "Unknown participants: " + ", ".join(resolved.unresolved)
+                    )
+                    return True
+                payload.participants = sorted(set(resolved.resolved.values()))
+                created = await _service_client().create_event(session, payload)
+            _clear_pending_action(message.from_user.id)
+            await message.answer(f"Подію #{created.id} створено.")
+        except ServiceConflictError as conflict:
+            await message.answer(_format_conflicts(conflict, timezone))
+        except Exception as exc:
+            logger.exception("Failed to create event from pending action")
+            await message.answer(f"Failed to create event: {exc}")
+        return True
+
+    if mode == "event_update":
+        item_id = int(pending.get("item_id", 0))
+        try:
+            timezone = await _get_user_timezone(message.from_user.id)
+            title, start_raw, end_raw, participants_raw = [
+                part.strip() for part in raw.split("|", maxsplit=3)
+            ]
+            participant_labels = _parse_participants(participants_raw)
+            payload = EventUpdate(
+                actor_tg_user_id=message.from_user.id,
+                title=title,
+                start_at=_parse_local_datetime(start_raw, timezone),
+                end_at=_parse_local_datetime(end_raw, timezone),
+                participants=[],
+            )
+        except Exception:
+            await message.answer("Невірний формат. Спробуйте ще раз.")
+            return True
+        try:
+            async with aiohttp.ClientSession() as session:
+                resolved = await _service_client().resolve_users(
+                    session, participant_labels
+                )
+                if resolved.unresolved:
+                    await message.answer(
+                        "Unknown participants: " + ", ".join(resolved.unresolved)
+                    )
+                    return True
+                payload.participants = sorted(set(resolved.resolved.values()))
+                updated = await _service_client().update_event(
+                    session, item_id, payload
+                )
+            _clear_pending_action(message.from_user.id)
+            start_local = _to_user_tz(updated.start_at, timezone)
+            end_local = _to_user_tz(updated.end_at, timezone)
+            await message.answer(
+                f"Подію #{updated.id} оновлено: {updated.title}\n"
+                f"{start_local:%Y-%m-%d %H:%M} - {end_local:%Y-%m-%d %H:%M} ({timezone})"
+            )
+        except ServiceConflictError as conflict:
+            await message.answer(_format_conflicts(conflict, timezone))
+        except Exception as exc:
+            logger.exception("Failed to update event from pending action")
+            await message.answer(f"Failed to update event: {exc}")
+        return True
+
+    if mode == "add_income":
+        try:
+            if "|" in raw:
+                amount_raw, comment_raw = [part.strip() for part in raw.split("|", 1)]
+                comment = comment_raw or None
+            else:
+                amount_raw = raw
+                comment = None
+            amount = _parse_amount(amount_raw)
+        except Exception:
+            await message.answer("Невірний формат. Використайте: <amount> | <comment>")
+            return True
+        try:
+            async with aiohttp.ClientSession() as session:
+                created = await _service_client().add_budget_contribution(
+                    session,
+                    BudgetContributionCreate(
+                        tg_user_id=message.from_user.id,
+                        amount=amount,
+                        comment=comment,
+                    ),
+                )
+            _clear_pending_action(message.from_user.id)
+            await message.answer(
+                f"Income added: +{created.amount}. Contribution #{created.id} saved."
+            )
+        except Exception as exc:
+            logger.exception("Failed to add income from pending action")
+            await message.answer(f"Failed to add income: {exc}")
+        return True
+
+    if mode == "add_expense":
+        try:
+            timezone = await _get_user_timezone(message.from_user.id)
+            amount_raw, category_raw, spent_at_raw = [
+                part.strip() for part in raw.split("|", maxsplit=2)
+            ]
+            amount = _parse_amount(amount_raw)
+            category = category_raw.strip()
+            if not category:
+                raise ValueError("empty category")
+            spent_at = _parse_local_datetime(spent_at_raw, timezone)
+        except Exception:
+            await message.answer(
+                "Невірний формат. Використайте:\n<amount> | <what> | <when>"
+            )
+            return True
+        try:
+            async with aiohttp.ClientSession() as session:
+                created = await _service_client().add_expense(
+                    session,
+                    ExpenseCreate(
+                        tg_user_id=message.from_user.id,
+                        amount=amount,
+                        category=category,
+                        spent_at=spent_at,
+                        comment=None,
+                    ),
+                )
+            _clear_pending_action(message.from_user.id)
+            await message.answer(
+                f"Витрату #{created.expense.id} додано на суму {created.expense.amount}."
+            )
+        except Exception as exc:
+            logger.exception("Failed to add expense from pending action")
+            await message.answer(f"Failed to add expense: {exc}")
+        return True
+
+    if mode == "set_daily_limit":
+        if not raw.isdigit():
+            await message.answer("Надішліть тільки число (0 щоб вимкнути).")
+            return True
+        daily_limit = int(raw)
+        try:
+            async with aiohttp.ClientSession() as session:
+                result = await _service_client().set_daily_limit(
+                    session,
+                    BudgetDailyLimitSet(
+                        actor_tg_user_id=message.from_user.id,
+                        daily_limit=daily_limit,
+                    ),
+                )
+            _clear_pending_action(message.from_user.id)
+            if result.daily_limit is None:
+                await message.answer("Daily limit disabled.")
+            else:
+                await message.answer(f"Daily limit set: {result.daily_limit}")
+        except Exception as exc:
+            logger.exception("Failed to set daily limit from pending action")
+            await message.answer(f"Failed to set daily limit: {exc}")
+        return True
+
+    return False
+
+
 async def text_handler(message: Message) -> None:
     if message.text is None or message.from_user is None:
         return
     await _register_user_aliases(message)
+    if await _handle_pending_action(message):
+        return
 
     entry = DiaryEntryCreate(
         tg_user_id=message.from_user.id,
@@ -886,7 +1497,30 @@ async def run() -> None:
 
     dp.message.register(start_handler, CommandStart())
     dp.message.register(help_handler, Command("help"))
-    dp.message.register(list_diary_handler, Command("diary"))
+    dp.message.register(open_main_menu_handler, F.text == BTN_BACK)
+    dp.message.register(open_diary_menu_handler, F.text == "/diary")
+    dp.message.register(open_events_menu_handler, F.text == "/events")
+    dp.message.register(open_expenses_menu_handler, F.text == "/expenses")
+    dp.message.register(list_diary_handler, F.text == BTN_DIARY_LIST)
+    dp.message.register(diary_edit_picker_handler, F.text == BTN_DIARY_EDIT)
+    dp.message.register(diary_delete_picker_handler, F.text == BTN_DIARY_DELETE)
+    dp.message.register(list_events_handler, F.text == BTN_EVENTS_LIST)
+    dp.message.register(list_events_today_handler, F.text == BTN_EVENTS_TODAY)
+    dp.message.register(create_event_prepare_handler, F.text == BTN_EVENTS_CREATE)
+    dp.message.register(events_update_picker_handler, F.text == BTN_EVENTS_UPDATE)
+    dp.message.register(events_delete_picker_handler, F.text == BTN_EVENTS_DELETE)
+    dp.message.register(timezone_handler, F.text == BTN_EVENTS_TIMEZONE)
+    dp.message.register(set_timezone_prepare_handler, F.text == BTN_EVENTS_SET_TIMEZONE)
+    dp.message.register(expenses_list_button_handler, F.text == BTN_EXPENSES_LIST)
+    dp.message.register(add_expense_prepare_handler, F.text == BTN_EXPENSES_ADD)
+    dp.message.register(add_income_prepare_handler, F.text == BTN_EXPENSES_INCOME)
+    dp.message.register(budget_handler, F.text == BTN_EXPENSES_BUDGET)
+    dp.message.register(daily_limit_handler, F.text == BTN_EXPENSES_DAILY)
+    dp.message.register(
+        set_daily_limit_prepare_handler, F.text == BTN_EXPENSES_SET_DAILY
+    )
+
+    dp.message.register(list_diary_handler, Command("diary_list"))
     dp.message.register(edit_diary_handler, Command("edit_diary"))
     dp.message.register(delete_diary_handler, Command("delete_diary"))
     dp.message.register(set_timezone_handler, Command("set_timezone"))
@@ -894,14 +1528,17 @@ async def run() -> None:
     dp.message.register(create_event_handler, Command("create_event"))
     dp.message.register(update_event_handler, Command("update_event"))
     dp.message.register(delete_event_handler, Command("delete_event"))
-    dp.message.register(list_events_handler, Command("events"))
+    dp.message.register(list_events_handler, Command("events_list"))
     dp.message.register(list_events_today_handler, Command("events_today"))
     dp.message.register(add_income_handler, Command("add_income"))
     dp.message.register(add_expense_handler, Command("add_expense"))
     dp.message.register(set_daily_limit_handler, Command("set_daily_limit"))
     dp.message.register(daily_limit_handler, Command("daily_limit"))
     dp.message.register(budget_handler, Command("budget"))
-    dp.message.register(expenses_handler, Command("expenses"))
+    dp.message.register(expenses_handler, Command("expenses_list"))
+
+    dp.callback_query.register(diary_callback_handler, F.data.startswith("diary:"))
+    dp.callback_query.register(event_callback_handler, F.data.startswith("event:"))
     dp.message.register(text_handler, F.text & ~F.text.startswith("/"))
 
     reminder_task = asyncio.create_task(reminders_loop(bot), name="reminders-loop")
