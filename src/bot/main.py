@@ -9,7 +9,7 @@ import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from .client import DiaryServiceClient, ServiceConflictError
 from .config import settings
@@ -49,6 +49,17 @@ HELP_TEXT = (
     "/expenses [limit]\n\n"
     "Time format: YYYY-MM-DD HH:MM (in your timezone)\n"
     "Participants: comma-separated tags/names or '-'"
+)
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="/diary"), KeyboardButton(text="/events")],
+        [KeyboardButton(text="/events_today"), KeyboardButton(text="/timezone")],
+        [KeyboardButton(text="/budget"), KeyboardButton(text="/daily_limit")],
+        [KeyboardButton(text="/expenses"), KeyboardButton(text="/help")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
 )
 
 
@@ -156,13 +167,14 @@ async def _get_user_timezone(user_id: int) -> str:
 async def start_handler(message: Message) -> None:
     await _register_user_aliases(message)
     await message.answer(
-        "Send plain text to store diary entry.\nUse /help to manage events and budget."
+        "Send plain text to store diary entry.\nUse buttons to manage events and budget.",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
 async def help_handler(message: Message) -> None:
     await _register_user_aliases(message)
-    await message.answer(HELP_TEXT)
+    await message.answer(HELP_TEXT, reply_markup=MAIN_KEYBOARD)
 
 
 async def timezone_handler(message: Message) -> None:
